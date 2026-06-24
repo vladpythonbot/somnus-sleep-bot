@@ -68,6 +68,20 @@ See Android permissions:
 flutter_app/ANDROID_SETUP.md
 ```
 
+## Build APK in GitHub
+
+You do not need Flutter or Android Studio on your PC.
+
+1. Open GitHub repository.
+2. Go to `Actions`.
+3. Open `Build Flutter APK`.
+4. Click `Run workflow`.
+5. Wait until the build is green.
+6. Download artifact `somnus-sync-apk`.
+7. Inside it, install `app-release.apk` on Android.
+
+The same build also runs automatically when files in `flutter_app/` are pushed.
+
 ## Backend URL in APK
 
 ```text
