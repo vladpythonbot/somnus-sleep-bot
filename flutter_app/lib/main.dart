@@ -54,13 +54,18 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
   final now = DateTime.now();
   final startTime = now.subtract(const Duration(hours: 30));
 
-  final records = await HealthConnectFactory.getRecord(
-    types: sleepTypes,
+  final sessionRecords = await HealthConnectFactory.getRecord(
+    type: HealthConnectDataType.SleepSession,
+    startTime: startTime,
+    endTime: now,
+  );
+  final stageRecords = await HealthConnectFactory.getRecord(
+    type: HealthConnectDataType.SleepStage,
     startTime: startTime,
     endTime: now,
   );
 
-  final parsed = parseSleepRecords(records);
+  final parsed = parseSleepRecords([sessionRecords, stageRecords]);
 
   return {
     'telegram_id': int.tryParse(telegramId) ?? telegramId,
@@ -337,7 +342,7 @@ class _SetupScreenState extends State<SetupScreen> {
         'telegramId': telegramId,
         'secret': secret,
       },
-      existingWorkPolicy: ExistingWorkPolicy.replace,
+      existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
     );
 
     setState(() => status = 'Готово. Фоновая отправка включена');
