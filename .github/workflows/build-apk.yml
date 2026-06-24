@@ -37,7 +37,9 @@ jobs:
         run: flutter --version
 
       - name: Generate Android project files
-        run: flutter create . --platforms=android --project-name somnus_sync
+        run: |
+          flutter create . --platforms=android --project-name somnus_sync
+          rm -rf test
 
       - name: Configure Android Health Connect permissions
         run: |
