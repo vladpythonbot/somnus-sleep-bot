@@ -1,0 +1,10 @@
+.env
+.venv/
+.idea/
+__pycache__/
+*.pyc
+*.log
+flutter_app/.dart_tool/
+flutter_app/build/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
