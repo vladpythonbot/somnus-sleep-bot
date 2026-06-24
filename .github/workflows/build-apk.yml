@@ -218,6 +218,62 @@ jobs:
               print(gradle.read_text(encoding="utf-8"))
           PY
 
+      - name: Prevent WorkManager release crash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          rules = Path("android/app/proguard-rules.pro")
+          rules.write_text(
+              '''# WorkManager/Room classes are created through reflection.
+          -keep class androidx.work.impl.WorkDatabase_Impl { *; }
+          -keep class * extends androidx.room.RoomDatabase { *; }
+          -keep class androidx.startup.** { *; }
+          ''',
+              encoding="utf-8",
+          )
+
+          kts = Path("android/app/build.gradle.kts")
+          groovy = Path("android/app/build.gradle")
+
+          if kts.exists():
+              gradle = kts.read_text(encoding="utf-8")
+              release_marker = "        release {\n"
+
+              if release_marker not in gradle:
+                  raise RuntimeError("Release build type not found in build.gradle.kts")
+
+              gradle = gradle.replace(
+                  release_marker,
+                  release_marker
+                  + "            isMinifyEnabled = false\n"
+                  + "            isShrinkResources = false\n",
+                  1,
+              )
+              kts.write_text(gradle, encoding="utf-8")
+              print(kts.read_text(encoding="utf-8"))
+
+          elif groovy.exists():
+              gradle = groovy.read_text(encoding="utf-8")
+              release_marker = "        release {\n"
+
+              if release_marker not in gradle:
+                  raise RuntimeError("Release build type not found in build.gradle")
+
+              gradle = gradle.replace(
+                  release_marker,
+                  release_marker
+                  + "            minifyEnabled false\n"
+                  + "            shrinkResources false\n",
+                  1,
+              )
+              groovy.write_text(gradle, encoding="utf-8")
+              print(groovy.read_text(encoding="utf-8"))
+
+          else:
+              raise RuntimeError("Android app Gradle file not found")
+          PY
+
       - name: Analyze Dart code
         run: flutter analyze
 
