@@ -45,65 +45,115 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
 
           manifest = Path("android/app/src/main/AndroidManifest.xml")
           text = manifest.read_text(encoding="utf-8")
 
-          if "android.permission.INTERNET" not in text:
-              text = text.replace(
-                  "<manifest",
-                  '<manifest',
-                  1,
-              )
-              text = text.replace(
-                  "<application",
-                  '    <uses-permission android:name="android.permission.INTERNET" />\n'
-                  '    <uses-permission android:name="android.permission.health.READ_SLEEP" />\n\n'
-                  '    <queries>\n'
-                  '        <package android:name="com.google.android.apps.healthdata" />\n'
-                  '    </queries>\n\n'
-                  "    <application",
-                  1,
+          manifest_entries = []
+
+          for permission in (
+              "android.permission.INTERNET",
+              "android.permission.health.READ_SLEEP",
+          ):
+              if permission not in text:
+                  manifest_entries.append(
+                      f'    <uses-permission android:name="{permission}" />'
+                  )
+
+          if "com.google.android.apps.healthdata" not in text:
+              manifest_entries.extend(
+                  [
+                      "    <queries>",
+                      '        <package android:name="com.google.android.apps.healthdata" />',
+                      "    </queries>",
+                  ]
               )
 
-          if "health_permissions" not in text:
-              text = text.replace(
-                  '<activity android:name=".MainActivity"',
-                  '<activity android:name=".MainActivity"',
-                  1,
-              )
-              activity_close = text.find(">", text.find('<activity android:name=".MainActivity"'))
+          if manifest_entries:
+              application_match = re.search(r"(?m)^\s*<application\b", text)
+              if application_match is None:
+                  raise RuntimeError("<application> not found in AndroidManifest.xml")
+
               text = (
-                  text[: activity_close + 1]
-                  + '\n            <meta-data android:name="health_permissions" android:resource="@array/health_permissions" />'
-                  + '\n            <intent-filter>'
-                  + '\n                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />'
-                  + '\n            </intent-filter>'
-                  + text[activity_close + 1 :]
+                  text[: application_match.start()]
+                  + "\n".join(manifest_entries)
+                  + "\n\n"
+                  + text[application_match.start() :]
+              )
+
+          activity_match = re.search(
+              r'''<activity\b(?=[^>]*android:name=["']\.MainActivity["'])[^>]*>''',
+              text,
+          )
+          if activity_match is None:
+              raise RuntimeError("MainActivity not found in AndroidManifest.xml")
+
+          activity_entries = []
+
+          if 'android:name="health_permissions"' not in text:
+              activity_entries.append(
+                  '            <meta-data android:name="health_permissions" '
+                  'android:resource="@array/health_permissions" />'
+              )
+
+          if "androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" not in text:
+              activity_entries.extend(
+                  [
+                      "            <intent-filter>",
+                      '                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />',
+                      "            </intent-filter>",
+                  ]
+              )
+
+          if activity_entries:
+              text = (
+                  text[: activity_match.end()]
+                  + "\n"
+                  + "\n".join(activity_entries)
+                  + text[activity_match.end() :]
               )
 
           manifest.write_text(text, encoding="utf-8")
+          ET.parse(manifest)
 
           values = Path("android/app/src/main/res/values")
           values.mkdir(parents=True, exist_ok=True)
-          (values / "health_permissions.xml").write_text(
-              """<?xml version="1.0" encoding="utf-8"?>
+
+          health_permissions = values / "health_permissions.xml"
+          health_permissions.write_text(
+              '''<?xml version="1.0" encoding="utf-8"?>
           <resources>
               <array name="health_permissions">
-                  <item>android.permission.health.READ_SLEEP</item>
+                  <item>androidx.health.permission.SleepSession.READ</item>
               </array>
           </resources>
-          """,
+          ''',
               encoding="utf-8",
           )
+          ET.parse(health_permissions)
 
-          for gradle in (Path("android/app/build.gradle.kts"), Path("android/app/build.gradle")):
+          for gradle in (
+              Path("android/app/build.gradle.kts"),
+              Path("android/app/build.gradle"),
+          ):
               if not gradle.exists():
                   continue
+
               gradle_text = gradle.read_text(encoding="utf-8")
-              gradle_text = gradle_text.replace("minSdk = flutter.minSdkVersion", "minSdk = 26")
-              gradle_text = gradle_text.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 26")
+              gradle_text = gradle_text.replace(
+                  "minSdk = flutter.minSdkVersion",
+                  "minSdk = 26",
+              )
+              gradle_text = gradle_text.replace(
+                  "minSdkVersion flutter.minSdkVersion",
+                  "minSdkVersion 26",
+              )
               gradle.write_text(gradle_text, encoding="utf-8")
+
+          print("AndroidManifest.xml is valid")
+          print(manifest.read_text(encoding="utf-8"))
           PY
 
       - name: Install dependencies
