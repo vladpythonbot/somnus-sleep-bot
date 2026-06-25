@@ -257,13 +257,41 @@ int? extractStageCode(Map<String, dynamic> map) {
     'sleep_stage_type',
     'type',
   ]);
+  return parseStageCode(value);
+}
+
+int? parseStageCode(dynamic value) {
   if (value == null) {
     return null;
   }
   if (value is num) {
     return value.toInt();
   }
-  return int.tryParse(value.toString());
+  if (value is Map) {
+    final map = value.map((key, child) => MapEntry(key.toString(), child));
+    return parseStageCode(firstValue(map, ['value', 'code', 'id', 'stage', 'name']));
+  }
+  final text = value.toString().toLowerCase();
+  final direct = int.tryParse(text);
+  if (direct != null) {
+    return direct;
+  }
+  if (text.contains('awake') || text.contains('out_of_bed') || text.contains('out of bed')) {
+    return 1;
+  }
+  if (text.contains('light')) {
+    return 4;
+  }
+  if (text.contains('deep')) {
+    return 5;
+  }
+  if (text.contains('rem')) {
+    return 6;
+  }
+  if (text.contains('sleep')) {
+    return 2;
+  }
+  return null;
 }
 
 int countRecordLikeItems(dynamic value) {
@@ -311,11 +339,30 @@ Map<String, dynamic> compactDebugSample(dynamic value) {
     }
     if (item is Map) {
       final map = item.map((key, child) => MapEntry(key.toString(), child));
+      final records = map['records'];
+      if (records is List) {
+        visit(records);
+        return;
+      }
+
+      final duration = extractDurationMinutes(map);
+      final stageCode = extractStageCode(map);
+      if (duration <= 0 && stageCode == null && map.values.any((child) => child is List || child is Map)) {
+        for (final child in map.values) {
+          if (child is List || child is Map) {
+            visit(child);
+            if (sample != null) {
+              return;
+            }
+          }
+        }
+      }
+
       final keys = map.keys.take(12).toList();
       sample = {
         'keys': keys,
-        'duration_minutes': extractDurationMinutes(map),
-        'stage_code': extractStageCode(map),
+        'duration_minutes': duration,
+        'stage_code': stageCode,
         'text': map.values.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
       };
     }
@@ -331,29 +378,49 @@ Map<String, dynamic> compactDebugSample(dynamic value) {
   }
   return sample!;
 }
+
 int extractDurationMinutes(Map<String, dynamic> map) {
   final direct = firstValue(map, [
-    'duration',
     'durationMinutes',
+    'duration_minutes',
     'minutes',
+    'duration',
+    'durationMillis',
+    'duration_millis',
+    'durationSeconds',
+    'duration_seconds',
   ]);
 
-  if (direct != null) {
-    final parsed = int.tryParse(direct.toString());
-    if (parsed != null && parsed > 0 && parsed < 24 * 60) {
-      return parsed;
-    }
+  final directMinutes = parseDurationMinutes(direct);
+  if (directMinutes > 0) {
+    return directMinutes;
   }
 
   final start = parseDate(firstValue(map, [
     'startTime',
     'start_time',
+    'startTimeMillis',
+    'start_time_millis',
+    'startEpochMillis',
+    'start_epoch_millis',
+    'startDateTime',
+    'start_date_time',
+    'startDate',
+    'start_date',
     'start',
     'from',
   ]));
   final end = parseDate(firstValue(map, [
     'endTime',
     'end_time',
+    'endTimeMillis',
+    'end_time_millis',
+    'endEpochMillis',
+    'end_epoch_millis',
+    'endDateTime',
+    'end_date_time',
+    'endDate',
+    'end_date',
     'end',
     'to',
   ]));
@@ -369,6 +436,61 @@ int extractDurationMinutes(Map<String, dynamic> map) {
   return minutes;
 }
 
+int parseDurationMinutes(dynamic value) {
+  if (value == null) {
+    return 0;
+  }
+  if (value is Map) {
+    final map = value.map((key, child) => MapEntry(key.toString(), child));
+    return parseDurationMinutes(firstValue(map, [
+      'minutes',
+      'inMinutes',
+      'seconds',
+      'inSeconds',
+      'millis',
+      'milliseconds',
+      'inMilliseconds',
+      'value',
+    ]));
+  }
+  if (value is num) {
+    final number = value.toDouble();
+    if (number <= 0) {
+      return 0;
+    }
+    if (number < 24 * 60) {
+      return number.round();
+    }
+    if (number < 24 * 60 * 60) {
+      return (number / 60).round();
+    }
+    if (number < 24 * 60 * 60 * 1000) {
+      return (number / 60000).round();
+    }
+    return 0;
+  }
+
+  final text = value.toString().trim();
+  final parsed = num.tryParse(text);
+  if (parsed != null) {
+    return parseDurationMinutes(parsed);
+  }
+
+  final durationMatch = RegExp(r'^(\d+):(\d{1,2}):(\d{1,2})').firstMatch(text);
+  if (durationMatch != null) {
+    final hours = int.parse(durationMatch.group(1)!);
+    final minutes = int.parse(durationMatch.group(2)!);
+    final seconds = int.parse(durationMatch.group(3)!);
+    return hours * 60 + minutes + (seconds >= 30 ? 1 : 0);
+  }
+
+  final minutesMatch = RegExp(r'(\d+)\s*(min|minute|minutes|м|мин)').firstMatch(text.toLowerCase());
+  if (minutesMatch != null) {
+    return int.parse(minutesMatch.group(1)!);
+  }
+  return 0;
+}
+
 dynamic firstValue(Map<String, dynamic> map, List<String> keys) {
   for (final key in keys) {
     if (map.containsKey(key) && map[key] != null) {
@@ -381,6 +503,31 @@ dynamic firstValue(Map<String, dynamic> map, List<String> keys) {
 DateTime? parseDate(dynamic value) {
   if (value == null) {
     return null;
+  }
+  if (value is DateTime) {
+    return value;
+  }
+  if (value is Map) {
+    final map = value.map((key, child) => MapEntry(key.toString(), child));
+    return parseDate(firstValue(map, [
+      'dateTime',
+      'date_time',
+      'time',
+      'value',
+      'millis',
+      'milliseconds',
+      'epochMillis',
+      'epoch_millis',
+    ]));
+  }
+  if (value is num) {
+    final number = value.toInt();
+    if (number > 100000000000) {
+      return DateTime.fromMillisecondsSinceEpoch(number);
+    }
+    if (number > 1000000000) {
+      return DateTime.fromMillisecondsSinceEpoch(number * 1000);
+    }
   }
   return DateTime.tryParse(value.toString());
 }
