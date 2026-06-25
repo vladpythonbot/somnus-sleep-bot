@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
+from os import getenv
 from pathlib import Path
 
 from sleep_analysis import SleepApkPayload, recovery_index, resolved_total_sleep
 
 
-DB_PATH = Path("sleep_bot.db")
+DB_PATH = Path(getenv("DB_PATH", "sleep_bot.db"))
 
 
 def connect() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection

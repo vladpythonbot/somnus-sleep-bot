@@ -24,6 +24,7 @@ Environment variables:
 BOT_TOKEN=your_telegram_bot_token
 WEBHOOK_SECRET=change_me
 PORT=8000
+DB_PATH=sleep_bot.db
 ```
 
 Run:
@@ -40,6 +41,20 @@ Railway uses:
 ```text
 python main.py
 ```
+
+For persistent sleep history on Railway, create a Volume mounted to:
+
+```text
+/data
+```
+
+Then add this Railway variable:
+
+```env
+DB_PATH=/data/sleep_bot.db
+```
+
+Without a Volume, sleep statistics can be lost after redeploys.
 
 ## APK
 
