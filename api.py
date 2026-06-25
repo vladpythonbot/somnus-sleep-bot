@@ -33,6 +33,16 @@ async def parse_sleep_payload(request: Request) -> SleepApkPayload:
 def create_app(bot: Bot) -> FastAPI:
     app = FastAPI(title="Somnus Sleep Bot")
 
+    @app.get("/")
+    async def root() -> dict[str, str | list[str]]:
+        return {
+            "ok": "true",
+            "service": "Somnus Sleep Bot",
+            "health": "/health",
+            "sleep_webhook": "/webhook/sleep-apk",
+            "methods": ["POST /webhook/sleep-apk", "GET /health"],
+        }
+
     @app.get("/health")
     async def health() -> dict[str, bool]:
         return {"ok": True}
