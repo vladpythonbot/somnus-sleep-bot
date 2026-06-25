@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from config import WEBHOOK_SECRET
 from sleep_analysis import SleepApkPayload, build_sleep_report
+from sleep_storage import get_recent_reports, init_db, save_sleep_report
 
 
 def verify_secret(request: Request) -> None:
@@ -33,6 +34,10 @@ async def parse_sleep_payload(request: Request) -> SleepApkPayload:
 def create_app(bot: Bot) -> FastAPI:
     app = FastAPI(title="Somnus Sleep Bot")
 
+    @app.on_event("startup")
+    async def startup() -> None:
+        init_db()
+
     @app.get("/")
     async def root() -> dict[str, str | list[str]]:
         return {
@@ -51,7 +56,9 @@ def create_app(bot: Bot) -> FastAPI:
     async def sleep_apk_webhook(request: Request) -> dict[str, bool | str]:
         verify_secret(request)
         payload = await parse_sleep_payload(request)
-        report = build_sleep_report(payload)
+        save_sleep_report(payload)
+        history = get_recent_reports(payload.telegram_id)
+        report = build_sleep_report(payload, history)
         await bot.send_message(chat_id=payload.telegram_id, text=report, parse_mode="HTML")
         return {"ok": True, "message": "Sleep APK report sent"}
 
