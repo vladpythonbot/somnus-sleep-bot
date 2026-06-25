@@ -509,6 +509,14 @@ DateTime? parseDate(dynamic value) {
   }
   if (value is Map) {
     final map = value.map((key, child) => MapEntry(key.toString(), child));
+    final epochSecond = firstValue(map, ['epochSecond', 'epoch_second', 'seconds', 'second']);
+    if (epochSecond != null) {
+      final seconds = int.tryParse(epochSecond.toString());
+      if (seconds != null && seconds > 1000000000) {
+        final nano = int.tryParse((firstValue(map, ['nano', 'nanos', 'nanosecond', 'nanoseconds']) ?? 0).toString()) ?? 0;
+        return DateTime.fromMillisecondsSinceEpoch(seconds * 1000 + nano ~/ 1000000);
+      }
+    }
     return parseDate(firstValue(map, [
       'dateTime',
       'date_time',
@@ -518,6 +526,9 @@ DateTime? parseDate(dynamic value) {
       'milliseconds',
       'epochMillis',
       'epoch_millis',
+      'epochMilliseconds',
+      'epoch_milliseconds',
+      'timestamp',
     ]));
   }
   if (value is num) {
