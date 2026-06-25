@@ -45,50 +45,69 @@ def resolved_total_sleep(payload: SleepApkPayload) -> int:
     return payload.deep_sleep_minutes + payload.light_sleep_minutes + payload.rem_sleep_minutes
 
 
-def sleep_score(payload: SleepApkPayload) -> tuple[int, list[str]]:
+def bounded_score(value: int) -> int:
+    return max(0, min(100, value))
+
+
+def recovery_index(payload: SleepApkPayload) -> tuple[int, dict[str, int], list[str]]:
     total = resolved_total_sleep(payload)
     deep = max(0, payload.deep_sleep_minutes)
     rem = max(0, payload.rem_sleep_minutes)
     awake = max(0, payload.awake_minutes)
 
-    score = 100
     notes: list[str] = []
 
-    if total < 360:
-        score -= 35
-        notes.append("сон сильно короче нормы")
+    duration_score = bounded_score(round(100 - abs(total - 480) / 180 * 100))
+    if 420 <= total <= 540:
+        duration_score = max(duration_score, 88)
+    elif total < 360:
+        notes.append("длительность сна заметно ниже 7 часов")
     elif total < 420:
-        score -= 18
-        notes.append("сон короче желательных 7 часов")
-    elif total > 570:
-        score -= 8
-        notes.append("сон длиннее обычного диапазона")
+        notes.append("сон немного короче желательного диапазона")
+    elif total > 600:
+        notes.append("сон сильно длиннее обычного диапазона")
 
+    # Wellness ranges, not medical thresholds.
     deep_percent = safe_percent(deep, total)
-    if deep_percent < 10:
-        score -= 22
-        notes.append("низкая доля глубокого сна")
-    elif deep_percent < 15:
-        score -= 10
-        notes.append("глубокий сон ниже оптимального уровня")
+    deep_score = bounded_score(round(100 - abs(deep_percent - 18) / 18 * 100))
+    if 13 <= deep_percent <= 25:
+        deep_score = max(deep_score, 82)
+    elif deep_percent < 10:
+        notes.append("глубокого сна мало относительно общей длительности")
+    elif deep_percent < 13:
+        notes.append("глубокий сон немного ниже желаемого диапазона")
 
     rem_percent = safe_percent(rem, total)
-    if rem_percent < 12:
-        score -= 14
+    rem_score = bounded_score(round(100 - abs(rem_percent - 22) / 18 * 100))
+    if 15 <= rem_percent <= 30:
+        rem_score = max(rem_score, 82)
+    elif rem_percent < 12:
         notes.append("REM-сна немного")
-    elif rem_percent > 30:
-        score -= 5
-        notes.append("REM-сна необычно много")
+    elif rem_percent > 32:
+        notes.append("REM-сна больше обычного диапазона")
 
     awake_percent = safe_percent(awake, total + awake)
-    if awake_percent > 12:
-        score -= 14
+    awake_score = bounded_score(round(100 - awake_percent / 18 * 100))
+    if awake_percent <= 8:
+        awake_score = max(awake_score, 82)
+    elif awake_percent > 12:
         notes.append("много пробуждений")
-    elif awake_percent > 7:
-        score -= 7
+    elif awake_percent > 8:
         notes.append("есть заметные пробуждения")
 
-    return max(0, min(100, score)), notes
+    parts = {
+        "duration": duration_score,
+        "deep": deep_score,
+        "rem": rem_score,
+        "awake": awake_score,
+    }
+    index = round(
+        duration_score * 0.35
+        + deep_score * 0.25
+        + rem_score * 0.20
+        + awake_score * 0.20
+    )
+    return bounded_score(index), parts, notes
 
 
 def build_recommendations(payload: SleepApkPayload, notes: list[str]) -> list[str]:
@@ -181,20 +200,26 @@ def build_sleep_report(payload: SleepApkPayload) -> str:
     rem_percent = safe_percent(rem, total)
     awake_percent = safe_percent(awake, total + awake)
 
-    score, notes = sleep_score(payload)
+    index, index_parts, notes = recovery_index(payload)
     recommendations = build_recommendations(payload, notes)
 
-    if score >= 85:
-        verdict = "✅ Отличное восстановление"
-    elif score >= 70:
-        verdict = "🟢 Нормальный сон"
-    elif score >= 55:
-        verdict = "🟡 Сон средний, есть что улучшить"
+    if index >= 85:
+        verdict = "✅ Сон выглядит восстановительным"
+    elif index >= 70:
+        verdict = "🟢 Общая картина сна хорошая"
+    elif index >= 55:
+        verdict = "🟡 Сон средний, есть слабые места"
     else:
-        verdict = "🔴 Сон слабый, восстановление могло пострадать"
+        verdict = "🔴 Сон мог восстановить хуже обычного"
 
     notes_text = "\n".join(f"• {note}" for note in notes) if notes else "• критичных замечаний нет"
     recommendations_text = "\n".join(f"• {item}" for item in recommendations)
+    index_text = (
+        f"• длительность: {index_parts['duration']}/100\n"
+        f"• глубокий сон: {index_parts['deep']}/100\n"
+        f"• REM: {index_parts['rem']}/100\n"
+        f"• пробуждения: {index_parts['awake']}/100"
+    )
 
     return (
         "🌙 <b>Отчёт о сне</b>\n\n"
@@ -206,8 +231,9 @@ def build_sleep_report(payload: SleepApkPayload) -> str:
         f"⬜ Лёгкий: <b>{minutes_to_hm(light)}</b> · {light_percent}%\n"
         f"🟪 REM: <b>{minutes_to_hm(rem)}</b> · {rem_percent}%\n"
         f"👁 Пробуждения: <b>{minutes_to_hm(awake)}</b> · {awake_percent}%\n\n"
-        f"⭐ Оценка: <b>{score}/100</b>\n"
+        f"⭐ Индекс восстановления: <b>{index}/100</b>\n"
         f"{verdict}\n\n"
+        f"📊 <b>Из чего сложился индекс</b>\n{index_text}\n\n"
         f"🔎 <b>Замечания</b>\n{notes_text}\n\n"
         f"💡 <b>Рекомендации</b>\n{recommendations_text}\n\n"
         "Важно: это не медицинский диагноз, а бытовая аналитика по данным браслета."
