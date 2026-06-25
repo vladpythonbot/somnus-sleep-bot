@@ -52,7 +52,7 @@ void callbackDispatcher() {
 
 Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
   final now = DateTime.now();
-  final startTime = now.subtract(const Duration(hours: 30));
+  final startTime = now.subtract(const Duration(days: 7));
 
   final sessionRecords = await HealthConnectFactory.getRecord(
     type: HealthConnectDataType.SleepSession,
@@ -66,6 +66,14 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
   );
 
   final parsed = parseSleepRecords([sessionRecords, stageRecords]);
+  final debug = Map<String, dynamic>.from(parsed.debug)
+    ..addAll({
+      'read_window_days': 7,
+      'session_record_count': countRecordLikeItems(sessionRecords),
+      'stage_record_count': countRecordLikeItems(stageRecords),
+      'session_sample': compactDebugSample(sessionRecords),
+      'stage_sample': compactDebugSample(stageRecords),
+    });
 
   return {
     'telegram_id': int.tryParse(telegramId) ?? telegramId,
@@ -76,7 +84,7 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
     'light_sleep_minutes': parsed.lightSleepMinutes,
     'rem_sleep_minutes': parsed.remSleepMinutes,
     'awake_minutes': parsed.awakeMinutes,
-    'raw_debug': parsed.debug,
+    'raw_debug': debug,
   };
 }
 
@@ -123,6 +131,10 @@ ParsedSleep parseSleepRecords(dynamic records) {
   var rem = 0;
   var awake = 0;
   var sessionTotal = 0;
+  var visitedMaps = 0;
+  var durationRecords = 0;
+  var classifiedStageRecords = 0;
+  var unclassifiedDurationRecords = 0;
 
   void visit(dynamic value) {
     if (value is List) {
@@ -133,23 +145,36 @@ ParsedSleep parseSleepRecords(dynamic records) {
     }
 
     if (value is Map) {
+      visitedMaps += 1;
       final map = value.map((key, item) => MapEntry(key.toString(), item));
       final typeText = map.values.join(' ').toLowerCase();
       final minutes = extractDurationMinutes(map);
+      final stage = classifySleepStage(map, typeText);
 
       if (minutes > 0) {
-        if (typeText.contains('deep')) {
-          deep += minutes;
-        } else if (typeText.contains('rem')) {
-          rem += minutes;
-        } else if (typeText.contains('light')) {
-          light += minutes;
-        } else if (typeText.contains('awake') ||
-            typeText.contains('wake') ||
-            typeText.contains('out_of_bed')) {
-          awake += minutes;
-        } else if (typeText.contains('sleep')) {
-          sessionTotal += minutes;
+        durationRecords += 1;
+        switch (stage) {
+          case 'deep':
+            deep += minutes;
+            classifiedStageRecords += 1;
+            break;
+          case 'rem':
+            rem += minutes;
+            classifiedStageRecords += 1;
+            break;
+          case 'light':
+            light += minutes;
+            classifiedStageRecords += 1;
+            break;
+          case 'awake':
+            awake += minutes;
+            classifiedStageRecords += 1;
+            break;
+          case 'sleep':
+            sessionTotal += minutes;
+            break;
+          default:
+            unclassifiedDurationRecords += 1;
         }
       }
 
@@ -175,16 +200,142 @@ ParsedSleep parseSleepRecords(dynamic records) {
     debug: {
       'stage_total': stageTotal,
       'session_total': sessionTotal,
+      'visited_maps': visitedMaps,
+      'duration_records': durationRecords,
+      'classified_stage_records': classifiedStageRecords,
+      'unclassified_duration_records': unclassifiedDurationRecords,
     },
   );
 }
 
+String? classifySleepStage(Map<String, dynamic> map, String typeText) {
+  if (typeText.contains('deep')) {
+    return 'deep';
+  }
+  if (typeText.contains('rem')) {
+    return 'rem';
+  }
+  if (typeText.contains('light')) {
+    return 'light';
+  }
+  if (typeText.contains('awake') ||
+      typeText.contains('wake') ||
+      typeText.contains('out_of_bed') ||
+      typeText.contains('out of bed')) {
+    return 'awake';
+  }
+
+  final stageCode = extractStageCode(map);
+  switch (stageCode) {
+    case 1: // Awake
+    case 3: // Out of bed
+      return 'awake';
+    case 2: // Generic sleeping stage
+      return 'sleep';
+    case 4: // Light sleep
+      return 'light';
+    case 5: // Deep sleep
+      return 'deep';
+    case 6: // REM sleep
+      return 'rem';
+  }
+
+  if (typeText.contains('sleep')) {
+    return 'sleep';
+  }
+  return null;
+}
+
+int? extractStageCode(Map<String, dynamic> map) {
+  final value = firstValue(map, [
+    'stage',
+    'stageType',
+    'stage_type',
+    'sleepStage',
+    'sleep_stage',
+    'sleepStageType',
+    'sleep_stage_type',
+    'type',
+  ]);
+  if (value == null) {
+    return null;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  return int.tryParse(value.toString());
+}
+
+int countRecordLikeItems(dynamic value) {
+  var count = 0;
+
+  void visit(dynamic item) {
+    if (item is List) {
+      for (final child in item) {
+        visit(child);
+      }
+      return;
+    }
+    if (item is Map) {
+      final map = item.map((key, child) => MapEntry(key.toString(), child));
+      if (extractDurationMinutes(map) > 0 || extractStageCode(map) != null) {
+        count += 1;
+      }
+      for (final child in map.values) {
+        if (child is List || child is Map) {
+          visit(child);
+        }
+      }
+    }
+  }
+
+  visit(value);
+  return count;
+}
+
+Map<String, dynamic> compactDebugSample(dynamic value) {
+  Map<String, dynamic>? sample;
+
+  void visit(dynamic item) {
+    if (sample != null) {
+      return;
+    }
+    if (item is List) {
+      for (final child in item) {
+        visit(child);
+        if (sample != null) {
+          return;
+        }
+      }
+      return;
+    }
+    if (item is Map) {
+      final map = item.map((key, child) => MapEntry(key.toString(), child));
+      final keys = map.keys.take(12).toList();
+      sample = {
+        'keys': keys,
+        'duration_minutes': extractDurationMinutes(map),
+        'stage_code': extractStageCode(map),
+        'text': map.values.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
+      };
+    }
+  }
+
+  visit(value);
+  if (sample == null) {
+    return {'empty': true};
+  }
+  final text = sample!['text'].toString();
+  if (text.length > 180) {
+    sample!['text'] = '${text.substring(0, 180)}...';
+  }
+  return sample!;
+}
 int extractDurationMinutes(Map<String, dynamic> map) {
   final direct = firstValue(map, [
     'duration',
     'durationMinutes',
     'minutes',
-    'value',
   ]);
 
   if (direct != null) {

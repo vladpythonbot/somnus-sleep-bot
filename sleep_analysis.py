@@ -109,13 +109,58 @@ def build_recommendations(payload: SleepApkPayload, notes: list[str]) -> list[st
     return recommendations
 
 
+def build_debug_summary(raw_debug: dict[str, Any] | None) -> str:
+    if not raw_debug:
+        return ""
+
+    fields = [
+        ("окно чтения", "read_window_days", "дн."),
+        ("SleepSession записей", "session_record_count", ""),
+        ("SleepStage записей", "stage_record_count", ""),
+        ("карт обработано", "visited_maps", ""),
+        ("записей с длительностью", "duration_records", ""),
+        ("распознано фаз", "classified_stage_records", ""),
+        ("минут фаз", "stage_total", ""),
+        ("минут сессий", "session_total", ""),
+    ]
+    lines: list[str] = []
+    for label, key, suffix in fields:
+        value = raw_debug.get(key)
+        if value is not None:
+            suffix_text = f" {suffix}" if suffix else ""
+            lines.append(f"• {label}: <b>{value}</b>{suffix_text}")
+
+    for sample_key, title in [("session_sample", "пример SleepSession"), ("stage_sample", "пример SleepStage")]:
+        sample = raw_debug.get(sample_key)
+        if isinstance(sample, dict) and not sample.get("empty"):
+            keys = sample.get("keys")
+            stage_code = sample.get("stage_code")
+            duration = sample.get("duration_minutes")
+            sample_parts: list[str] = []
+            if keys:
+                sample_parts.append(f"keys: {', '.join(map(str, keys))}")
+            if stage_code is not None:
+                sample_parts.append(f"stage_code: {stage_code}")
+            if duration is not None:
+                sample_parts.append(f"duration: {duration} мин")
+            if sample_parts:
+                lines.append(f"• {title}: <code>{' | '.join(sample_parts)}</code>")
+
+    if not lines:
+        return ""
+    return "\n\n🔎 <b>Диагностика</b>\n" + "\n".join(lines)
+
+
 def build_sleep_report(payload: SleepApkPayload) -> str:
     total = resolved_total_sleep(payload)
     if total <= 0:
+        debug_text = build_debug_summary(payload.raw_debug)
         return (
             "🌙 <b>Данные сна получены</b>\n\n"
-            "Но в отчёте нет длительности сна и фаз. Проверь, что Mi Fitness отдаёт сон в Health Connect, "
-            "а APK получил разрешение на SleepSession и SleepStage."
+            "Но в отчёте нет длительности сна и фаз. Теперь бот показывает диагностику ниже: "
+            "если SleepSession/SleepStage = 0, значит Mi Fitness пока не передал сон в Health Connect или нет разрешений. "
+            "Если записи есть, но фаз 0 — нужно подстроить парсер под формат данных телефона."
+            f"{debug_text}"
         )
 
     deep = max(0, payload.deep_sleep_minutes)
