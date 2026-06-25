@@ -10,6 +10,7 @@ class SleepApkPayload(BaseModel):
     telegram_id: int
     date: str | None = None
     source: str | None = None
+    app_build: str | None = None
     total_sleep_minutes: int = Field(default=0)
     deep_sleep_minutes: int = Field(default=0)
     light_sleep_minutes: int = Field(default=0)
@@ -114,6 +115,7 @@ def build_debug_summary(raw_debug: dict[str, Any] | None) -> str:
         return ""
 
     fields = [
+        ("APK build", "app_build", ""),
         ("окно чтения", "read_window_days", "дн."),
         ("SleepSession записей", "session_record_count", ""),
         ("SleepStage записей", "stage_record_count", ""),
@@ -136,6 +138,8 @@ def build_debug_summary(raw_debug: dict[str, Any] | None) -> str:
             keys = sample.get("keys")
             stage_code = sample.get("stage_code")
             duration = sample.get("duration_minutes")
+            start_parsed = sample.get("start_parsed")
+            end_parsed = sample.get("end_parsed")
             sample_parts: list[str] = []
             if keys:
                 sample_parts.append(f"keys: {', '.join(map(str, keys))}")
@@ -143,6 +147,10 @@ def build_debug_summary(raw_debug: dict[str, Any] | None) -> str:
                 sample_parts.append(f"stage_code: {stage_code}")
             if duration is not None:
                 sample_parts.append(f"duration: {duration} мин")
+            if start_parsed:
+                sample_parts.append(f"start: {start_parsed}")
+            if end_parsed:
+                sample_parts.append(f"end: {end_parsed}")
             if sample_parts:
                 lines.append(f"• {title}: <code>{' | '.join(sample_parts)}</code>")
 
@@ -191,7 +199,8 @@ def build_sleep_report(payload: SleepApkPayload) -> str:
     return (
         "🌙 <b>Отчёт о сне</b>\n\n"
         f"📅 Дата: <b>{normalize_date(payload.date)}</b>\n"
-        f"📱 Источник: <b>{payload.source or 'Health Connect APK'}</b>\n\n"
+        f"📱 Источник: <b>{payload.source or 'Health Connect APK'}</b>\n"
+        f"🔧 APK: <b>{payload.app_build or 'unknown'}</b>\n\n"
         f"🛌 Всего сна: <b>{minutes_to_hm(total)}</b>\n"
         f"🟦 Глубокий: <b>{minutes_to_hm(deep)}</b> · {deep_percent}%\n"
         f"⬜ Лёгкий: <b>{minutes_to_hm(light)}</b> · {light_percent}%\n"

@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
+const String appBuild = '2026-06-25-epoch-debug';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
 
@@ -79,6 +80,7 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
     'telegram_id': int.tryParse(telegramId) ?? telegramId,
     'date': now.toIso8601String(),
     'source': 'health_connect_flutter_apk',
+    'app_build': appBuild,
     'total_sleep_minutes': parsed.totalSleepMinutes,
     'deep_sleep_minutes': parsed.deepSleepMinutes,
     'light_sleep_minutes': parsed.lightSleepMinutes,
@@ -363,6 +365,22 @@ Map<String, dynamic> compactDebugSample(dynamic value) {
         'keys': keys,
         'duration_minutes': duration,
         'stage_code': stageCode,
+        'start_parsed': parseDate(firstValue(map, [
+          'startTime',
+          'start_time',
+          'startDateTime',
+          'start_date_time',
+          'startTimeMillis',
+          'start_time_millis',
+        ]))?.toIso8601String(),
+        'end_parsed': parseDate(firstValue(map, [
+          'endTime',
+          'end_time',
+          'endDateTime',
+          'end_date_time',
+          'endTimeMillis',
+          'end_time_millis',
+        ]))?.toIso8601String(),
         'text': map.values.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
       };
     }
@@ -511,7 +529,7 @@ DateTime? parseDate(dynamic value) {
     final map = value.map((key, child) => MapEntry(key.toString(), child));
     final epochSecond = firstValue(map, ['epochSecond', 'epoch_second', 'seconds', 'second']);
     if (epochSecond != null) {
-      final seconds = int.tryParse(epochSecond.toString());
+      final seconds = num.tryParse(epochSecond.toString())?.toInt();
       if (seconds != null && seconds > 1000000000) {
         final nano = int.tryParse((firstValue(map, ['nano', 'nanos', 'nanosecond', 'nanoseconds']) ?? 0).toString()) ?? 0;
         return DateTime.fromMillisecondsSinceEpoch(seconds * 1000 + nano ~/ 1000000);
