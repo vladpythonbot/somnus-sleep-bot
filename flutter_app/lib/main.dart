@@ -81,6 +81,8 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
     'date': now.toIso8601String(),
     'source': 'health_connect_flutter_apk',
     'app_build': appBuild,
+    'sleep_start': parsed.sleepStart?.toIso8601String(),
+    'sleep_end': parsed.sleepEnd?.toIso8601String(),
     'total_sleep_minutes': parsed.totalSleepMinutes,
     'deep_sleep_minutes': parsed.deepSleepMinutes,
     'light_sleep_minutes': parsed.lightSleepMinutes,
@@ -116,6 +118,8 @@ class ParsedSleep {
     required this.lightSleepMinutes,
     required this.remSleepMinutes,
     required this.awakeMinutes,
+    required this.sleepStart,
+    required this.sleepEnd,
     required this.debug,
   });
 
@@ -124,6 +128,8 @@ class ParsedSleep {
   final int lightSleepMinutes;
   final int remSleepMinutes;
   final int awakeMinutes;
+  final DateTime? sleepStart;
+  final DateTime? sleepEnd;
   final Map<String, dynamic> debug;
 }
 
@@ -137,6 +143,8 @@ ParsedSleep parseSleepRecords(dynamic records) {
   var durationRecords = 0;
   var classifiedStageRecords = 0;
   var unclassifiedDurationRecords = 0;
+  DateTime? sleepStart;
+  DateTime? sleepEnd;
 
   void visit(dynamic value) {
     if (value is List) {
@@ -152,9 +160,19 @@ ParsedSleep parseSleepRecords(dynamic records) {
       final typeText = map.values.join(' ').toLowerCase();
       final minutes = extractDurationMinutes(map);
       final stage = classifySleepStage(map, typeText);
+      final start = extractStartTime(map);
+      final end = extractEndTime(map);
 
       if (minutes > 0) {
         durationRecords += 1;
+        if (stage == 'sleep' && start != null && end != null) {
+          if (sleepStart == null || start.isBefore(sleepStart!)) {
+            sleepStart = start;
+          }
+          if (sleepEnd == null || end.isAfter(sleepEnd!)) {
+            sleepEnd = end;
+          }
+        }
         switch (stage) {
           case 'deep':
             deep += minutes;
@@ -199,6 +217,8 @@ ParsedSleep parseSleepRecords(dynamic records) {
     lightSleepMinutes: light,
     remSleepMinutes: rem,
     awakeMinutes: awake,
+    sleepStart: sleepStart,
+    sleepEnd: sleepEnd,
     debug: {
       'stage_total': stageTotal,
       'session_total': sessionTotal,
@@ -414,7 +434,22 @@ int extractDurationMinutes(Map<String, dynamic> map) {
     return directMinutes;
   }
 
-  final start = parseDate(firstValue(map, [
+  final start = extractStartTime(map);
+  final end = extractEndTime(map);
+
+  if (start == null || end == null) {
+    return 0;
+  }
+
+  final minutes = end.difference(start).inMinutes;
+  if (minutes <= 0 || minutes > 24 * 60) {
+    return 0;
+  }
+  return minutes;
+}
+
+DateTime? extractStartTime(Map<String, dynamic> map) {
+  return parseDate(firstValue(map, [
     'startTime',
     'start_time',
     'startTimeMillis',
@@ -428,7 +463,10 @@ int extractDurationMinutes(Map<String, dynamic> map) {
     'start',
     'from',
   ]));
-  final end = parseDate(firstValue(map, [
+}
+
+DateTime? extractEndTime(Map<String, dynamic> map) {
+  return parseDate(firstValue(map, [
     'endTime',
     'end_time',
     'endTimeMillis',
@@ -442,16 +480,6 @@ int extractDurationMinutes(Map<String, dynamic> map) {
     'end',
     'to',
   ]));
-
-  if (start == null || end == null) {
-    return 0;
-  }
-
-  final minutes = end.difference(start).inMinutes;
-  if (minutes <= 0 || minutes > 24 * 60) {
-    return 0;
-  }
-  return minutes;
 }
 
 int parseDurationMinutes(dynamic value) {

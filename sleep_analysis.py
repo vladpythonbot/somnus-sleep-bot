@@ -11,6 +11,8 @@ class SleepApkPayload(BaseModel):
     date: str | None = None
     source: str | None = None
     app_build: str | None = None
+    sleep_start: str | None = None
+    sleep_end: str | None = None
     total_sleep_minutes: int = Field(default=0)
     deep_sleep_minutes: int = Field(default=0)
     light_sleep_minutes: int = Field(default=0)
@@ -37,6 +39,15 @@ def normalize_date(value: str | None) -> str:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%d.%m.%Y")
     except ValueError:
         return value
+
+
+def format_time(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%H:%M")
+    except ValueError:
+        return None
 
 
 def resolved_total_sleep(payload: SleepApkPayload) -> int:
@@ -199,6 +210,11 @@ def build_sleep_report(payload: SleepApkPayload) -> str:
     light_percent = safe_percent(light, total)
     rem_percent = safe_percent(rem, total)
     awake_percent = safe_percent(awake, total + awake)
+    sleep_start = format_time(payload.sleep_start)
+    sleep_end = format_time(payload.sleep_end)
+    sleep_window = ""
+    if sleep_start and sleep_end:
+        sleep_window = f"🌙 Заснул: <b>{sleep_start}</b>\n☀️ Проснулся: <b>{sleep_end}</b>\n"
 
     index, index_parts, notes = recovery_index(payload)
     recommendations = build_recommendations(payload, notes)
@@ -226,6 +242,7 @@ def build_sleep_report(payload: SleepApkPayload) -> str:
         f"📅 Дата: <b>{normalize_date(payload.date)}</b>\n"
         f"📱 Источник: <b>{payload.source or 'Health Connect APK'}</b>\n"
         f"🔧 APK: <b>{payload.app_build or 'unknown'}</b>\n\n"
+        f"{sleep_window}"
         f"🛌 Всего сна: <b>{minutes_to_hm(total)}</b>\n"
         f"🟦 Глубокий: <b>{minutes_to_hm(deep)}</b> · {deep_percent}%\n"
         f"⬜ Лёгкий: <b>{minutes_to_hm(light)}</b> · {light_percent}%\n"
