@@ -8,7 +8,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-26-after-wake-report';
+const String appBuild = '2026-06-26-clean-setup';
+const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
 const int defaultReportDelayMinutes = 30;
@@ -28,8 +29,6 @@ void callbackDispatcher() {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    final backendUrl =
-        inputData?['backendUrl'] as String? ?? prefs.getString('backendUrl') ?? '';
     final telegramId =
         inputData?['telegramId'] as String? ?? prefs.getString('telegramId') ?? '';
     final secret = inputData?['secret'] as String? ?? prefs.getString('secret') ?? '';
@@ -37,7 +36,7 @@ void callbackDispatcher() {
         prefs.getInt('reportDelayMinutes') ??
         defaultReportDelayMinutes;
 
-    if (backendUrl.isEmpty || telegramId.isEmpty) {
+    if (telegramId.isEmpty) {
       return false;
     }
 
@@ -772,7 +771,6 @@ class SetupScreen extends StatefulWidget {
 }
 
 class _SetupScreenState extends State<SetupScreen> {
-  final backendController = TextEditingController();
   final telegramController = TextEditingController();
   final secretController = TextEditingController();
   String status = 'Не запущено';
@@ -786,7 +784,6 @@ class _SetupScreenState extends State<SetupScreen> {
 
   @override
   void dispose() {
-    backendController.dispose();
     telegramController.dispose();
     secretController.dispose();
     super.dispose();
@@ -794,7 +791,6 @@ class _SetupScreenState extends State<SetupScreen> {
 
   Future<void> loadSaved() async {
     final prefs = await SharedPreferences.getInstance();
-    backendController.text = prefs.getString('backendUrl') ?? '';
     telegramController.text = prefs.getString('telegramId') ?? '';
     secretController.text = prefs.getString('secret') ?? '';
     setState(() {
@@ -869,17 +865,15 @@ class _SetupScreenState extends State<SetupScreen> {
         return;
       }
 
-      final backendUrl = backendController.text.trim();
       final telegramId = telegramController.text.trim();
       final secret = secretController.text.trim();
 
-      if (backendUrl.isEmpty || telegramId.isEmpty) {
-        setState(() => status = 'Заполни URL сервера и Telegram ID');
+      if (telegramId.isEmpty) {
+        setState(() => status = 'Заполни Telegram ID');
         return;
       }
 
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('backendUrl', backendUrl);
       await prefs.setString('telegramId', telegramId);
       await prefs.setString('secret', secret);
       await prefs.setInt('reportDelayMinutes', reportDelayMinutes);
@@ -891,7 +885,6 @@ class _SetupScreenState extends State<SetupScreen> {
         initialDelay: const Duration(minutes: 15),
         constraints: Constraints(networkType: NetworkType.connected),
         inputData: {
-          'backendUrl': backendUrl,
           'telegramId': telegramId,
           'secret': secret,
           'reportDelayMinutes': reportDelayMinutes,
@@ -906,11 +899,10 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   Future<void> testNow() async {
-    final backendUrl = backendController.text.trim();
     final telegramId = telegramController.text.trim();
 
-    if (backendUrl.isEmpty || telegramId.isEmpty) {
-      setState(() => status = 'Заполни URL сервера и Telegram ID');
+    if (telegramId.isEmpty) {
+      setState(() => status = 'Заполни Telegram ID');
       return;
     }
 
@@ -932,51 +924,117 @@ class _SetupScreenState extends State<SetupScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Somnus Sync')),
+      appBar: AppBar(
+        title: const Text('Somnus Sync'),
+        centerTitle: false,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          Text(
+            'Отчёт после пробуждения',
+            style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'APK берёт сон из Health Connect и отправляет анализ в Telegram через выбранное время после подъёма.',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 20),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  Icon(Icons.cloud_done_outlined, color: theme.colorScheme.primary),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Сервер уже подключён. Вводить URL не нужно.',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
           TextField(
-            controller: backendController,
+            controller: telegramController,
+            keyboardType: TextInputType.number,
             decoration: const InputDecoration(
-              labelText: 'URL сервера',
-              hintText: 'https://your-app.up.railway.app/webhook/sleep-apk',
+              labelText: 'Telegram ID',
+              prefixIcon: Icon(Icons.telegram),
+              border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
           TextField(
-            controller: telegramController,
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Telegram ID'),
-          ),
-          const SizedBox(height: 12),
-          TextField(
             controller: secretController,
-            decoration: const InputDecoration(labelText: 'Webhook secret'),
+            decoration: const InputDecoration(
+              labelText: 'Webhook secret',
+              prefixIcon: Icon(Icons.lock_outline),
+              border: OutlineInputBorder(),
+            ),
           ),
           const SizedBox(height: 16),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: const Text('Когда прислать отчёт'),
-            subtitle: Text('Через $reportDelayMinutes мин после подъёма, один раз за ночь'),
-            trailing: FilledButton.tonal(
-              onPressed: pickReportDelay,
-              child: Text('$reportDelayMinutes мин'),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.schedule),
+              title: const Text('Когда прислать отчёт'),
+              subtitle: Text('Через $reportDelayMinutes мин после подъёма'),
+              trailing: FilledButton.tonal(
+                onPressed: pickReportDelay,
+                child: Text('$reportDelayMinutes мин'),
+              ),
             ),
           ),
           const SizedBox(height: 24),
           FilledButton(
             onPressed: start,
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(48),
+            ),
             child: const Text('Сохранить и включить'),
           ),
           const SizedBox(height: 12),
           OutlinedButton(
             onPressed: testNow,
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(48),
+            ),
             child: const Text('Отправить тест сейчас'),
           ),
           const SizedBox(height: 24),
-          Text(status),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.55),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline, size: 20, color: theme.colorScheme.primary),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text(status)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
     );

@@ -110,13 +110,19 @@ You do not need Flutter or Android Studio on your PC.
 
 The same build also runs automatically when files in `flutter_app/` are pushed.
 
-## Backend URL in APK
+## APK setup
+
+The backend URL is built into the APK:
 
 ```text
-https://YOUR_DOMAIN.up.railway.app/webhook/sleep-apk
+https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk
 ```
 
-If `WEBHOOK_SECRET` is enabled, enter the same secret in the APK field.
+In the APK, the user only enters:
+
+- Telegram ID
+- Webhook secret
+- report delay after wake-up
 
 ## JSON payload
 

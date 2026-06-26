@@ -43,16 +43,14 @@ async def help_command(message: Message) -> None:
         "2️⃣ <b>Health Connect</b>\n"
         "В Android Health Connect разреши Mi Fitness записывать данные сна.\n\n"
         "3️⃣ <b>Наш APK</b>\n"
-        "Открой APK Somnus Sync, введи URL сервера, свой Telegram ID и webhook secret.\n\n"
+        "Открой APK Somnus Sync, введи свой Telegram ID и webhook secret.\n\n"
         "Твой Telegram ID:\n"
         f"<code>{user_id}</code>\n\n"
         "4️⃣ <b>Разрешения</b>\n"
         "Нажми в APK кнопку <b>Сохранить и включить</b> и разреши доступ к данным сна.\n\n"
         "5️⃣ <b>Отчёт после подъёма</b>\n"
         "APK смотрит время подъёма, ждёт выбранную задержку и отправляет утренний отчёт один раз за ночь.\n\n"
-        "Статистика за 7 и 30 дней доступна по кнопке <b>📊 Статистика</b>.\n\n"
-        "Endpoint сервера:\n"
-        "<code>https://YOUR_DOMAIN/webhook/sleep-apk</code>"
+        "Статистика за 7 и 30 дней доступна по кнопке <b>📊 Статистика</b>."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
