@@ -81,6 +81,15 @@ The app:
 
 Android WorkManager is battery-friendly and does not guarantee exact alarm-like timing. The report is sent after the detected wake-up time when Android allows background work and network access.
 
+Report delivery depends on:
+
+- when Mi Fitness writes sleep data to Health Connect
+- the delay selected in the APK after wake-up
+- network availability
+- Android battery optimization
+- whether background activity is allowed for the APK
+- WorkManager scheduling decisions
+
 See Android permissions:
 
 ```text
