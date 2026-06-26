@@ -74,8 +74,12 @@ The app:
 
 - requests Health Connect sleep permissions
 - reads `SleepSession` and `SleepStage`
+- lets the user choose a morning report time
 - registers a 24-hour Workmanager background task
+- sends the automatic report after the chosen time, once per day
 - sends JSON to the backend
+
+Android WorkManager is battery-friendly and does not guarantee exact alarm-like timing. The report is sent after the selected time when Android allows background work and network access.
 
 See Android permissions:
 

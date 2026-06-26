@@ -8,9 +8,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-26-session-filter';
+const String appBuild = '2026-06-26-scheduled-report';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
+const String defaultReportTime = '09:00';
 
 const List<HealthConnectDataType> sleepTypes = [
   HealthConnectDataType.SleepSession,
@@ -32,23 +33,80 @@ void callbackDispatcher() {
     final telegramId =
         inputData?['telegramId'] as String? ?? prefs.getString('telegramId') ?? '';
     final secret = inputData?['secret'] as String? ?? prefs.getString('secret') ?? '';
+    final reportTime =
+        inputData?['reportTime'] as String? ?? prefs.getString('reportTime') ?? defaultReportTime;
 
     if (backendUrl.isEmpty || telegramId.isEmpty) {
       return false;
     }
 
     try {
+      final shouldSend = await shouldSendScheduledReport(reportTime, prefs);
+      if (!shouldSend) {
+        return true;
+      }
+
       final payload = await collectSleepPayload(telegramId);
       await sendSleepPayload(
         backendUrl: backendUrl,
         secret: secret,
         payload: payload,
       );
+      await markScheduledReportSent(prefs);
       return true;
     } catch (_) {
       return false;
     }
   });
+}
+
+String todayKey() {
+  final now = DateTime.now();
+  return '${now.year.toString().padLeft(4, '0')}-'
+      '${now.month.toString().padLeft(2, '0')}-'
+      '${now.day.toString().padLeft(2, '0')}';
+}
+
+int minutesOfDay(DateTime value) => value.hour * 60 + value.minute;
+
+int reportMinutes(String value) {
+  final parts = value.split(':');
+  if (parts.length != 2) {
+    return 9 * 60;
+  }
+  var hours = int.tryParse(parts[0]) ?? 9;
+  var minutes = int.tryParse(parts[1]) ?? 0;
+  hours = hours < 0 ? 0 : (hours > 23 ? 23 : hours);
+  minutes = minutes < 0 ? 0 : (minutes > 59 ? 59 : minutes);
+  return hours * 60 + minutes;
+}
+
+Duration delayUntilReportTime(String value) {
+  final now = DateTime.now();
+  final targetMinutes = reportMinutes(value);
+  var target = DateTime(
+    now.year,
+    now.month,
+    now.day,
+    targetMinutes ~/ 60,
+    targetMinutes % 60,
+  );
+  if (!target.isAfter(now)) {
+    target = target.add(const Duration(days: 1));
+  }
+  return target.difference(now);
+}
+
+Future<bool> shouldSendScheduledReport(String reportTime, SharedPreferences prefs) async {
+  final now = DateTime.now();
+  if (minutesOfDay(now) < reportMinutes(reportTime)) {
+    return false;
+  }
+  return prefs.getString('lastAutoSentDate') != todayKey();
+}
+
+Future<void> markScheduledReportSent(SharedPreferences prefs) async {
+  await prefs.setString('lastAutoSentDate', todayKey());
 }
 
 Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
@@ -716,6 +774,7 @@ class _SetupScreenState extends State<SetupScreen> {
   final telegramController = TextEditingController();
   final secretController = TextEditingController();
   String status = 'Не запущено';
+  String reportTime = defaultReportTime;
 
   @override
   void initState() {
@@ -736,64 +795,98 @@ class _SetupScreenState extends State<SetupScreen> {
     backendController.text = prefs.getString('backendUrl') ?? '';
     telegramController.text = prefs.getString('telegramId') ?? '';
     secretController.text = prefs.getString('secret') ?? '';
+    setState(() {
+      reportTime = prefs.getString('reportTime') ?? defaultReportTime;
+      final lastSent = prefs.getString('lastAutoSentDate');
+      status = lastSent == null
+          ? 'Выбери время отчёта и запусти синхронизацию'
+          : 'Последний автоотчёт: $lastSent';
+    });
+  }
+
+  Future<void> pickReportTime() async {
+    final minutes = reportMinutes(reportTime);
+    final selected = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: minutes ~/ 60, minute: minutes % 60),
+    );
+    if (selected == null) {
+      return;
+    }
+    final value =
+        '${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}';
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('reportTime', value);
+    setState(() {
+      reportTime = value;
+      status = 'Время отчёта: $value. Нажми запуск, чтобы обновить расписание.';
+    });
   }
 
   Future<void> start() async {
-    setState(() => status = 'Проверяю Health Connect...');
+    try {
+      setState(() => status = 'Проверяю Health Connect...');
 
-    final isSupported = await HealthConnectFactory.isApiSupported();
-    if (!isSupported) {
-      setState(() => status = 'Health Connect не поддерживается на этом устройстве');
-      return;
+      final isSupported = await HealthConnectFactory.isApiSupported();
+      if (!isSupported) {
+        setState(() => status = 'Health Connect не поддерживается на этом устройстве');
+        return;
+      }
+
+      final isAvailable = await HealthConnectFactory.isAvailable();
+      if (!isAvailable) {
+        await HealthConnectFactory.installHealthConnect();
+        setState(() => status = 'Установи Health Connect и повтори запуск');
+        return;
+      }
+
+      setState(() => status = 'Запрашиваю разрешения...');
+
+      final granted = await HealthConnectFactory.requestPermissions(
+        sleepTypes,
+        readOnly: true,
+      );
+      if (!granted) {
+        setState(() => status = 'Разрешения не выданы');
+        return;
+      }
+
+      final backendUrl = backendController.text.trim();
+      final telegramId = telegramController.text.trim();
+      final secret = secretController.text.trim();
+
+      if (backendUrl.isEmpty || telegramId.isEmpty) {
+        setState(() => status = 'Заполни URL сервера и Telegram ID');
+        return;
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('backendUrl', backendUrl);
+      await prefs.setString('telegramId', telegramId);
+      await prefs.setString('secret', secret);
+      await prefs.setString('reportTime', reportTime);
+
+      final initialDelay = delayUntilReportTime(reportTime);
+
+      await Workmanager().registerPeriodicTask(
+        sleepTaskUniqueName,
+        sleepTaskName,
+        frequency: const Duration(hours: 24),
+        initialDelay: initialDelay,
+        constraints: Constraints(networkType: NetworkType.connected),
+        inputData: {
+          'backendUrl': backendUrl,
+          'telegramId': telegramId,
+          'secret': secret,
+          'reportTime': reportTime,
+        },
+        existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
+      );
+
+      setState(() => status = 'Готово. Автоотчёт после $reportTime, не чаще 1 раза в день.');
+    } catch (error) {
+      setState(() => status = 'Ошибка запуска: $error');
     }
-
-    final isAvailable = await HealthConnectFactory.isAvailable();
-    if (!isAvailable) {
-      await HealthConnectFactory.installHealthConnect();
-      setState(() => status = 'Установи Health Connect и повтори запуск');
-      return;
-    }
-
-    setState(() => status = 'Запрашиваю разрешения...');
-
-    final granted = await HealthConnectFactory.requestPermissions(
-      sleepTypes,
-      readOnly: true,
-    );
-    if (!granted) {
-      setState(() => status = 'Разрешения не выданы');
-      return;
-    }
-
-    final backendUrl = backendController.text.trim();
-    final telegramId = telegramController.text.trim();
-    final secret = secretController.text.trim();
-
-    if (backendUrl.isEmpty || telegramId.isEmpty) {
-      setState(() => status = 'Заполни URL сервера и Telegram ID');
-      return;
-    }
-
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('backendUrl', backendUrl);
-    await prefs.setString('telegramId', telegramId);
-    await prefs.setString('secret', secret);
-
-    await Workmanager().registerPeriodicTask(
-      sleepTaskUniqueName,
-      sleepTaskName,
-      frequency: const Duration(hours: 24),
-      initialDelay: const Duration(minutes: 15),
-      constraints: Constraints(networkType: NetworkType.connected),
-      inputData: {
-        'backendUrl': backendUrl,
-        'telegramId': telegramId,
-        'secret': secret,
-      },
-      existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
-    );
-
-    setState(() => status = 'Готово. Фоновая отправка включена');
   }
 
   Future<void> testNow() async {
@@ -805,16 +898,20 @@ class _SetupScreenState extends State<SetupScreen> {
       return;
     }
 
-    setState(() => status = 'Отправляю тест...');
+    try {
+      setState(() => status = 'Отправляю тест...');
 
-    final payload = await collectSleepPayload(telegramId);
-    await sendSleepPayload(
-      backendUrl: backendUrl,
-      secret: secretController.text.trim(),
-      payload: payload,
-    );
+      final payload = await collectSleepPayload(telegramId);
+      await sendSleepPayload(
+        backendUrl: backendUrl,
+        secret: secretController.text.trim(),
+        payload: payload,
+      );
 
-    setState(() => status = 'Тест отправлен');
+      setState(() => status = 'Тест отправлен. Автоотчёт всё равно придёт после $reportTime.');
+    } catch (error) {
+      setState(() => status = 'Ошибка теста: $error');
+    }
   }
 
   @override
@@ -842,10 +939,20 @@ class _SetupScreenState extends State<SetupScreen> {
             controller: secretController,
             decoration: const InputDecoration(labelText: 'Webhook secret'),
           ),
+          const SizedBox(height: 16),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Время утреннего отчёта'),
+            subtitle: Text('Автоотправка после $reportTime, один раз в день'),
+            trailing: FilledButton.tonal(
+              onPressed: pickReportTime,
+              child: Text(reportTime),
+            ),
+          ),
           const SizedBox(height: 24),
           FilledButton(
             onPressed: start,
-            child: const Text('Запустить и выдать разрешения'),
+            child: const Text('Сохранить и включить'),
           ),
           const SizedBox(height: 12),
           OutlinedButton(
