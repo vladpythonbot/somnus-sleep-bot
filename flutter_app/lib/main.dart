@@ -8,10 +8,10 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-26-scheduled-report';
+const String appBuild = '2026-06-26-after-wake-report';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
-const String defaultReportTime = '09:00';
+const int defaultReportDelayMinutes = 30;
 
 const List<HealthConnectDataType> sleepTypes = [
   HealthConnectDataType.SleepSession,
@@ -33,26 +33,31 @@ void callbackDispatcher() {
     final telegramId =
         inputData?['telegramId'] as String? ?? prefs.getString('telegramId') ?? '';
     final secret = inputData?['secret'] as String? ?? prefs.getString('secret') ?? '';
-    final reportTime =
-        inputData?['reportTime'] as String? ?? prefs.getString('reportTime') ?? defaultReportTime;
+    final reportDelayMinutes = inputData?['reportDelayMinutes'] as int? ??
+        prefs.getInt('reportDelayMinutes') ??
+        defaultReportDelayMinutes;
 
     if (backendUrl.isEmpty || telegramId.isEmpty) {
       return false;
     }
 
     try {
-      final shouldSend = await shouldSendScheduledReport(reportTime, prefs);
+      final payload = await collectSleepPayload(telegramId);
+      final shouldSend = await shouldSendAfterWake(
+        payload: payload,
+        delayMinutes: reportDelayMinutes,
+        prefs: prefs,
+      );
       if (!shouldSend) {
         return true;
       }
 
-      final payload = await collectSleepPayload(telegramId);
       await sendSleepPayload(
         backendUrl: backendUrl,
         secret: secret,
         payload: payload,
       );
-      await markScheduledReportSent(prefs);
+      await markScheduledReportSent(prefs, payload);
       return true;
     } catch (_) {
       return false;
@@ -67,46 +72,43 @@ String todayKey() {
       '${now.day.toString().padLeft(2, '0')}';
 }
 
-int minutesOfDay(DateTime value) => value.hour * 60 + value.minute;
-
-int reportMinutes(String value) {
-  final parts = value.split(':');
-  if (parts.length != 2) {
-    return 9 * 60;
+DateTime? parseIsoDate(String? value) {
+  if (value == null || value.isEmpty) {
+    return null;
   }
-  var hours = int.tryParse(parts[0]) ?? 9;
-  var minutes = int.tryParse(parts[1]) ?? 0;
-  hours = hours < 0 ? 0 : (hours > 23 ? 23 : hours);
-  minutes = minutes < 0 ? 0 : (minutes > 59 ? 59 : minutes);
-  return hours * 60 + minutes;
+  return DateTime.tryParse(value);
 }
 
-Duration delayUntilReportTime(String value) {
-  final now = DateTime.now();
-  final targetMinutes = reportMinutes(value);
-  var target = DateTime(
-    now.year,
-    now.month,
-    now.day,
-    targetMinutes ~/ 60,
-    targetMinutes % 60,
-  );
-  if (!target.isAfter(now)) {
-    target = target.add(const Duration(days: 1));
+String sleepDateKey(Map<String, dynamic> payload) {
+  final sleepEnd = parseIsoDate(payload['sleep_end'] as String?);
+  if (sleepEnd == null) {
+    return todayKey();
   }
-  return target.difference(now);
+  return '${sleepEnd.year.toString().padLeft(4, '0')}-'
+      '${sleepEnd.month.toString().padLeft(2, '0')}-'
+      '${sleepEnd.day.toString().padLeft(2, '0')}';
 }
 
-Future<bool> shouldSendScheduledReport(String reportTime, SharedPreferences prefs) async {
-  final now = DateTime.now();
-  if (minutesOfDay(now) < reportMinutes(reportTime)) {
+Future<bool> shouldSendAfterWake({
+  required Map<String, dynamic> payload,
+  required int delayMinutes,
+  required SharedPreferences prefs,
+}) async {
+  final sleepEnd = parseIsoDate(payload['sleep_end'] as String?);
+  if (sleepEnd == null) {
     return false;
   }
-  return prefs.getString('lastAutoSentDate') != todayKey();
+
+  final readyAt = sleepEnd.add(Duration(minutes: delayMinutes));
+  if (DateTime.now().isBefore(readyAt)) {
+    return false;
+  }
+
+  return prefs.getString('lastAutoSentSleepDate') != sleepDateKey(payload);
 }
 
-Future<void> markScheduledReportSent(SharedPreferences prefs) async {
-  await prefs.setString('lastAutoSentDate', todayKey());
+Future<void> markScheduledReportSent(SharedPreferences prefs, Map<String, dynamic> payload) async {
+  await prefs.setString('lastAutoSentSleepDate', sleepDateKey(payload));
 }
 
 Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
@@ -774,7 +776,7 @@ class _SetupScreenState extends State<SetupScreen> {
   final telegramController = TextEditingController();
   final secretController = TextEditingController();
   String status = 'Не запущено';
-  String reportTime = defaultReportTime;
+  int reportDelayMinutes = defaultReportDelayMinutes;
 
   @override
   void initState() {
@@ -796,30 +798,46 @@ class _SetupScreenState extends State<SetupScreen> {
     telegramController.text = prefs.getString('telegramId') ?? '';
     secretController.text = prefs.getString('secret') ?? '';
     setState(() {
-      reportTime = prefs.getString('reportTime') ?? defaultReportTime;
-      final lastSent = prefs.getString('lastAutoSentDate');
+      reportDelayMinutes = prefs.getInt('reportDelayMinutes') ?? defaultReportDelayMinutes;
+      final lastSent = prefs.getString('lastAutoSentSleepDate');
       status = lastSent == null
-          ? 'Выбери время отчёта и запусти синхронизацию'
+          ? 'Выбери задержку после подъёма и включи синхронизацию'
           : 'Последний автоотчёт: $lastSent';
     });
   }
 
-  Future<void> pickReportTime() async {
-    final minutes = reportMinutes(reportTime);
-    final selected = await showTimePicker(
+  Future<void> pickReportDelay() async {
+    final selected = await showModalBottomSheet<int>(
       context: context,
-      initialTime: TimeOfDay(hour: minutes ~/ 60, minute: minutes % 60),
+      builder: (context) {
+        const values = [15, 30, 45, 60, 90];
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(
+                title: Text('Когда присылать отчёт'),
+                subtitle: Text('После времени подъёма из Health Connect'),
+              ),
+              for (final value in values)
+                ListTile(
+                  title: Text('Через $value мин'),
+                  trailing: value == reportDelayMinutes ? const Icon(Icons.check) : null,
+                  onTap: () => Navigator.pop(context, value),
+                ),
+            ],
+          ),
+        );
+      },
     );
     if (selected == null) {
       return;
     }
-    final value =
-        '${selected.hour.toString().padLeft(2, '0')}:${selected.minute.toString().padLeft(2, '0')}';
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('reportTime', value);
+    await prefs.setInt('reportDelayMinutes', selected);
     setState(() {
-      reportTime = value;
-      status = 'Время отчёта: $value. Нажми запуск, чтобы обновить расписание.';
+      reportDelayMinutes = selected;
+      status = 'Отчёт через $selected мин после подъёма. Нажми запуск, чтобы обновить расписание.';
     });
   }
 
@@ -864,26 +882,24 @@ class _SetupScreenState extends State<SetupScreen> {
       await prefs.setString('backendUrl', backendUrl);
       await prefs.setString('telegramId', telegramId);
       await prefs.setString('secret', secret);
-      await prefs.setString('reportTime', reportTime);
-
-      final initialDelay = delayUntilReportTime(reportTime);
+      await prefs.setInt('reportDelayMinutes', reportDelayMinutes);
 
       await Workmanager().registerPeriodicTask(
         sleepTaskUniqueName,
         sleepTaskName,
-        frequency: const Duration(hours: 24),
-        initialDelay: initialDelay,
+        frequency: const Duration(minutes: 30),
+        initialDelay: const Duration(minutes: 15),
         constraints: Constraints(networkType: NetworkType.connected),
         inputData: {
           'backendUrl': backendUrl,
           'telegramId': telegramId,
           'secret': secret,
-          'reportTime': reportTime,
+          'reportDelayMinutes': reportDelayMinutes,
         },
         existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
       );
 
-      setState(() => status = 'Готово. Автоотчёт после $reportTime, не чаще 1 раза в день.');
+      setState(() => status = 'Готово. Отчёт через $reportDelayMinutes мин после подъёма.');
     } catch (error) {
       setState(() => status = 'Ошибка запуска: $error');
     }
@@ -908,7 +924,7 @@ class _SetupScreenState extends State<SetupScreen> {
         payload: payload,
       );
 
-      setState(() => status = 'Тест отправлен. Автоотчёт всё равно придёт после $reportTime.');
+      setState(() => status = 'Тест отправлен. Автоотчёт придёт после подъёма + $reportDelayMinutes мин.');
     } catch (error) {
       setState(() => status = 'Ошибка теста: $error');
     }
@@ -942,11 +958,11 @@ class _SetupScreenState extends State<SetupScreen> {
           const SizedBox(height: 16),
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Время утреннего отчёта'),
-            subtitle: Text('Автоотправка после $reportTime, один раз в день'),
+            title: const Text('Когда прислать отчёт'),
+            subtitle: Text('Через $reportDelayMinutes мин после подъёма, один раз за ночь'),
             trailing: FilledButton.tonal(
-              onPressed: pickReportTime,
-              child: Text(reportTime),
+              onPressed: pickReportDelay,
+              child: Text('$reportDelayMinutes мин'),
             ),
           ),
           const SizedBox(height: 24),
