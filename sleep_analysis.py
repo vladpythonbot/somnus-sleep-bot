@@ -70,7 +70,88 @@ def bounded_score(value: int) -> int:
     return max(0, min(100, value))
 
 
-def recovery_index(payload: SleepApkPayload) -> tuple[int, dict[str, int], list[str]]:
+def range_score(value: int, ideal_min: int, ideal_max: int, hard_min: int, hard_max: int) -> int:
+    if ideal_min <= value <= ideal_max:
+        return 100
+    if value < ideal_min:
+        return bounded_score(round((value - hard_min) / (ideal_min - hard_min) * 100))
+    return bounded_score(round((hard_max - value) / (hard_max - ideal_max) * 100))
+
+
+def circular_diff_minutes(a: int, b: int) -> int:
+    diff = abs(a - b) % (24 * 60)
+    return min(diff, 24 * 60 - diff)
+
+
+def average_clock_minutes(values: list[int], night_start: bool = False) -> int | None:
+    if not values:
+        return None
+    normalized = [value + 24 * 60 if night_start and value < 12 * 60 else value for value in values]
+    return average(normalized) % (24 * 60)
+
+
+def date_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def comparable_history(payload: SleepApkPayload, history: list[SleepApkPayload] | None) -> list[SleepApkPayload]:
+    if not history:
+        return []
+    current_key = date_key(payload.sleep_end) or date_key(payload.date) or date_key(payload.sleep_start)
+    return [
+        item
+        for item in history
+        if (date_key(item.sleep_end) or date_key(item.date) or date_key(item.sleep_start)) != current_key
+    ][:14]
+
+
+def regularity_score(payload: SleepApkPayload, history: list[SleepApkPayload] | None) -> tuple[int, list[str]]:
+    baseline = comparable_history(payload, history)
+    if len(baseline) < 3:
+        return 80, []
+
+    notes: list[str] = []
+    total = resolved_total_sleep(payload)
+    current_start = time_to_minutes(payload.sleep_start)
+    current_end = time_to_minutes(payload.sleep_end)
+
+    baseline_totals = [resolved_total_sleep(item) for item in baseline]
+    duration_diff = abs(total - average(baseline_totals))
+    duration_part = bounded_score(round(100 - duration_diff / 120 * 100))
+
+    start_values = [value for value in (time_to_minutes(item.sleep_start) for item in baseline) if value is not None]
+    end_values = [value for value in (time_to_minutes(item.sleep_end) for item in baseline) if value is not None]
+
+    timing_scores: list[int] = []
+    avg_start = average_clock_minutes(start_values, night_start=True)
+    avg_end = average_clock_minutes(end_values)
+    if current_start is not None and avg_start is not None:
+        start_diff = circular_diff_minutes(current_start, avg_start)
+        timing_scores.append(bounded_score(round(100 - start_diff / 90 * 100)))
+        if start_diff >= 75:
+            notes.append("время засыпания заметно отличается от обычного")
+    if current_end is not None and avg_end is not None:
+        end_diff = circular_diff_minutes(current_end, avg_end)
+        timing_scores.append(bounded_score(round(100 - end_diff / 90 * 100)))
+        if end_diff >= 75:
+            notes.append("время подъёма заметно отличается от обычного")
+
+    timing_part = average(timing_scores) if timing_scores else 80
+    if duration_diff >= 90:
+        notes.append("длительность сна сильно отличается от последних ночей")
+
+    return bounded_score(round(duration_part * 0.45 + timing_part * 0.55)), notes
+
+
+def recovery_index(
+    payload: SleepApkPayload,
+    history: list[SleepApkPayload] | None = None,
+) -> tuple[int, dict[str, int], list[str]]:
     total = resolved_total_sleep(payload)
     deep = max(0, payload.deep_sleep_minutes)
     rem = max(0, payload.rem_sleep_minutes)
@@ -78,61 +159,57 @@ def recovery_index(payload: SleepApkPayload) -> tuple[int, dict[str, int], list[
 
     notes: list[str] = []
 
-    duration_score = bounded_score(round(100 - abs(total - 480) / 180 * 100))
-    if 420 <= total <= 540:
-        duration_score = max(duration_score, 88)
-    elif total < 360:
+    duration_score = range_score(total, ideal_min=420, ideal_max=540, hard_min=300, hard_max=660)
+    if total < 360:
         notes.append("длительность сна заметно ниже 7 часов")
     elif total < 420:
         notes.append("сон немного короче желательного диапазона")
     elif total > 600:
         notes.append("сон сильно длиннее обычного диапазона")
 
-    # Wellness ranges, not medical thresholds.
+    efficiency = safe_percent(total, total + awake)
+    efficiency_score = range_score(efficiency, ideal_min=90, ideal_max=100, hard_min=70, hard_max=100)
+    if efficiency < 80:
+        notes.append("низкая эффективность сна: много времени ушло на пробуждения")
+    elif efficiency < 88:
+        notes.append("сон был немного фрагментирован")
+
     deep_percent = safe_percent(deep, total)
-    deep_score = bounded_score(round(100 - abs(deep_percent - 18) / 18 * 100))
-    if 13 <= deep_percent <= 25:
-        deep_score = max(deep_score, 82)
-    elif deep_percent < 10:
+    deep_score = range_score(deep_percent, ideal_min=13, ideal_max=23, hard_min=5, hard_max=35)
+    if deep_percent < 10:
         notes.append("глубокого сна мало относительно общей длительности")
     elif deep_percent < 13:
         notes.append("глубокий сон немного ниже желаемого диапазона")
 
     rem_percent = safe_percent(rem, total)
-    rem_score = bounded_score(round(100 - abs(rem_percent - 22) / 18 * 100))
-    if 15 <= rem_percent <= 30:
-        rem_score = max(rem_score, 82)
-    elif rem_percent < 12:
+    rem_score = range_score(rem_percent, ideal_min=18, ideal_max=28, hard_min=8, hard_max=40)
+    if rem_percent < 12:
         notes.append("REM-сна немного")
     elif rem_percent > 32:
         notes.append("REM-сна больше обычного диапазона")
 
-    awake_percent = safe_percent(awake, total + awake)
-    awake_score = bounded_score(round(100 - awake_percent / 18 * 100))
-    if awake_percent <= 8:
-        awake_score = max(awake_score, 82)
-    elif awake_percent > 12:
-        notes.append("много пробуждений")
-    elif awake_percent > 8:
-        notes.append("есть заметные пробуждения")
+    stage_score = bounded_score(round(deep_score * 0.50 + rem_score * 0.50))
+    regularity, regularity_notes = regularity_score(payload, history)
+    notes.extend(regularity_notes)
 
     parts = {
         "duration": duration_score,
-        "deep": deep_score,
-        "rem": rem_score,
-        "awake": awake_score,
+        "efficiency": efficiency_score,
+        "stages": stage_score,
+        "regularity": regularity,
     }
     index = round(
-        duration_score * 0.35
-        + deep_score * 0.25
-        + rem_score * 0.20
-        + awake_score * 0.20
+        duration_score * 0.30
+        + efficiency_score * 0.25
+        + stage_score * 0.25
+        + regularity * 0.20
     )
     return bounded_score(index), parts, notes
 
 
 def build_recommendations(payload: SleepApkPayload, notes: list[str]) -> list[str]:
     total = resolved_total_sleep(payload)
+    efficiency = safe_percent(total, total + max(0, payload.awake_minutes))
     recommendations: list[str] = []
 
     if total < 420:
@@ -141,7 +218,7 @@ def build_recommendations(payload: SleepApkPayload, notes: list[str]) -> list[st
         recommendations.append("За час до сна убрать яркий экран, тяжёлую еду и интенсивные тренировки.")
     if safe_percent(payload.rem_sleep_minutes, total) < 12:
         recommendations.append("Проверить стресс, поздний кофе и нерегулярный режим.")
-    if payload.awake_minutes > 40:
+    if efficiency < 88 or payload.awake_minutes > 60:
         recommendations.append("Посмотреть, что мешало сну: температура, шум, свет или поздняя вода.")
 
     if not recommendations:
@@ -318,7 +395,7 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
     if sleep_start and sleep_end:
         sleep_window = f"🌙 Заснул: <b>{sleep_start}</b>\n☀️ Проснулся: <b>{sleep_end}</b>\n"
 
-    index, index_parts, notes = recovery_index(payload)
+    index, index_parts, notes = recovery_index(payload, history)
     recommendations = build_recommendations(payload, notes)
 
     if index >= 85:
@@ -335,9 +412,9 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
     history_text = build_history_summary(history)
     index_text = (
         f"• длительность: {index_parts['duration']}/100\n"
-        f"• глубокий сон: {index_parts['deep']}/100\n"
-        f"• REM: {index_parts['rem']}/100\n"
-        f"• пробуждения: {index_parts['awake']}/100"
+        f"• эффективность: {index_parts['efficiency']}/100\n"
+        f"• фазы сна: {index_parts['stages']}/100\n"
+        f"• регулярность: {index_parts['regularity']}/100"
     )
 
     return (
