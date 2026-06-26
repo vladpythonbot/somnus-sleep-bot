@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-25-epoch-debug';
+const String appBuild = '2026-06-26-session-filter';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
 
@@ -66,12 +66,19 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
     endTime: now,
   );
 
-  final parsed = parseSleepRecords([sessionRecords, stageRecords]);
+  final sleepWindow = findLatestSleepWindow(sessionRecords);
+  final parsed = parseSleepRecords(
+    [sessionRecords, stageRecords],
+    windowStart: sleepWindow?.start,
+    windowEnd: sleepWindow?.end,
+  );
   final debug = Map<String, dynamic>.from(parsed.debug)
     ..addAll({
       'read_window_days': 7,
       'session_record_count': countRecordLikeItems(sessionRecords),
       'stage_record_count': countRecordLikeItems(stageRecords),
+      'selected_sleep_start': sleepWindow?.start.toIso8601String(),
+      'selected_sleep_end': sleepWindow?.end.toIso8601String(),
       'session_sample': compactDebugSample(sessionRecords),
       'stage_sample': compactDebugSample(stageRecords),
     });
@@ -133,7 +140,18 @@ class ParsedSleep {
   final Map<String, dynamic> debug;
 }
 
-ParsedSleep parseSleepRecords(dynamic records) {
+class SleepWindow {
+  const SleepWindow({required this.start, required this.end});
+
+  final DateTime start;
+  final DateTime end;
+}
+
+ParsedSleep parseSleepRecords(
+  dynamic records, {
+  DateTime? windowStart,
+  DateTime? windowEnd,
+}) {
   var deep = 0;
   var light = 0;
   var rem = 0;
@@ -143,8 +161,8 @@ ParsedSleep parseSleepRecords(dynamic records) {
   var durationRecords = 0;
   var classifiedStageRecords = 0;
   var unclassifiedDurationRecords = 0;
-  DateTime? sleepStart;
-  DateTime? sleepEnd;
+  DateTime? sleepStart = windowStart;
+  DateTime? sleepEnd = windowEnd;
 
   void visit(dynamic value) {
     if (value is List) {
@@ -162,10 +180,12 @@ ParsedSleep parseSleepRecords(dynamic records) {
       final stage = classifySleepStage(map, typeText);
       final start = extractStartTime(map);
       final end = extractEndTime(map);
+      final insideSelectedWindow = isInsideWindow(start, end, windowStart, windowEnd);
+      final minutesInWindow = minutesInsideWindow(start, end, windowStart, windowEnd);
 
       if (minutes > 0) {
         durationRecords += 1;
-        if (stage == 'sleep' && start != null && end != null) {
+        if (stage == 'sleep' && start != null && end != null && sleepStart == null && sleepEnd == null) {
           if (sleepStart == null || start.isBefore(sleepStart!)) {
             sleepStart = start;
           }
@@ -175,23 +195,37 @@ ParsedSleep parseSleepRecords(dynamic records) {
         }
         switch (stage) {
           case 'deep':
-            deep += minutes;
+            if (!insideSelectedWindow) {
+              break;
+            }
+            deep += minutesInWindow > 0 ? minutesInWindow : minutes;
             classifiedStageRecords += 1;
             break;
           case 'rem':
-            rem += minutes;
+            if (!insideSelectedWindow) {
+              break;
+            }
+            rem += minutesInWindow > 0 ? minutesInWindow : minutes;
             classifiedStageRecords += 1;
             break;
           case 'light':
-            light += minutes;
+            if (!insideSelectedWindow) {
+              break;
+            }
+            light += minutesInWindow > 0 ? minutesInWindow : minutes;
             classifiedStageRecords += 1;
             break;
           case 'awake':
-            awake += minutes;
+            if (!insideSelectedWindow) {
+              break;
+            }
+            awake += minutesInWindow > 0 ? minutesInWindow : minutes;
             classifiedStageRecords += 1;
             break;
           case 'sleep':
-            sessionTotal += minutes;
+            if (insideSelectedWindow) {
+              sessionTotal += minutesInWindow > 0 ? minutesInWindow : minutes;
+            }
             break;
           default:
             unclassifiedDurationRecords += 1;
@@ -228,6 +262,65 @@ ParsedSleep parseSleepRecords(dynamic records) {
       'unclassified_duration_records': unclassifiedDurationRecords,
     },
   );
+}
+
+SleepWindow? findLatestSleepWindow(dynamic records) {
+  SleepWindow? selected;
+  var selectedMinutes = 0;
+
+  void visit(dynamic value) {
+    if (value is List) {
+      for (final item in value) {
+        visit(item);
+      }
+      return;
+    }
+    if (value is Map) {
+      final map = value.map((key, item) => MapEntry(key.toString(), item));
+      final start = extractStartTime(map);
+      final end = extractEndTime(map);
+      final minutes = extractDurationMinutes(map);
+      final hasStage = extractStageCode(map) != null;
+
+      if (!hasStage && start != null && end != null && minutes >= 120 && minutes <= 16 * 60) {
+        if (selected == null ||
+            end.isAfter(selected!.end) ||
+            (end.isAtSameMomentAs(selected!.end) && minutes > selectedMinutes)) {
+          selected = SleepWindow(start: start, end: end);
+          selectedMinutes = minutes;
+        }
+      }
+
+      for (final child in map.values) {
+        if (child is List || child is Map) {
+          visit(child);
+        }
+      }
+    }
+  }
+
+  visit(records);
+  return selected;
+}
+
+bool isInsideWindow(DateTime? start, DateTime? end, DateTime? windowStart, DateTime? windowEnd) {
+  if (windowStart == null || windowEnd == null) {
+    return true;
+  }
+  if (start == null || end == null) {
+    return false;
+  }
+  return end.isAfter(windowStart) && start.isBefore(windowEnd);
+}
+
+int minutesInsideWindow(DateTime? start, DateTime? end, DateTime? windowStart, DateTime? windowEnd) {
+  if (start == null || end == null || windowStart == null || windowEnd == null) {
+    return 0;
+  }
+  final clippedStart = start.isBefore(windowStart) ? windowStart : start;
+  final clippedEnd = end.isAfter(windowEnd) ? windowEnd : end;
+  final minutes = clippedEnd.difference(clippedStart).inMinutes;
+  return minutes > 0 ? minutes : 0;
 }
 
 String? classifySleepStage(Map<String, dynamic> map, String typeText) {
