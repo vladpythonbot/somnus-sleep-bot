@@ -368,6 +368,16 @@ def build_history_summary(history: list[SleepApkPayload] | None) -> str:
     return f"\n\n{week}\n\n{month}{conclusion}"
 
 
+def build_statistics_report(history: list[SleepApkPayload] | None) -> str:
+    if not history:
+        return (
+            "📊 <b>Статистика сна</b>\n\n"
+            "Пока нет сохранённых ночей. Первый отчёт появится после автоматической отправки из APK."
+        )
+
+    return "📊 <b>Статистика сна</b>" + build_history_summary(history)
+
+
 def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] | None = None) -> str:
     total = resolved_total_sleep(payload)
     if total <= 0:
@@ -409,7 +419,6 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
 
     notes_text = "\n".join(f"• {note}" for note in notes) if notes else "• критичных замечаний нет"
     recommendations_text = "\n".join(f"• {item}" for item in recommendations)
-    history_text = build_history_summary(history)
     index_text = (
         f"• длительность: {index_parts['duration']}/100\n"
         f"• эффективность: {index_parts['efficiency']}/100\n"
@@ -431,5 +440,4 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
         f"📊 <b>Из чего сложился индекс</b>\n{index_text}\n\n"
         f"🔎 <b>Замечания</b>\n{notes_text}\n\n"
         f"💡 <b>Рекомендации</b>\n{recommendations_text}"
-        f"{history_text}"
     )
