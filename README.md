@@ -105,10 +105,31 @@ You do not need Flutter or Android Studio on your PC.
 3. Open `Build Flutter APK`.
 4. Click `Run workflow`.
 5. Wait until the build is green.
-6. Download artifact `somnus-sync-apk`.
+6. Download artifact `somnus-apk`.
 7. Inside it, install `app-release.apk` on Android.
 
 The same build also runs automatically when files in `flutter_app/` are pushed.
+
+## APK updates
+
+The Android app name is `Somnus`.
+
+For APK updates without uninstalling:
+
+- keep the same Android package id
+- increase `version` in `flutter_app/pubspec.yaml`
+- sign every release with the same release key
+
+GitHub Actions can sign the APK automatically. Add these repository secrets in GitHub:
+
+```text
+ANDROID_KEYSTORE_BASE64
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+```
+
+If these secrets are missing, GitHub will still build an APK, but Android may require deleting the old app before installing the new one. After stable signing is configured once, future APK files install as normal updates.
 
 ## APK setup
 

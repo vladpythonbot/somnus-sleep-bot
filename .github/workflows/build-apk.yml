@@ -121,6 +121,22 @@ jobs:
           values = Path("android/app/src/main/res/values")
           values.mkdir(parents=True, exist_ok=True)
 
+          strings = values / "strings.xml"
+          strings.write_text(
+              '''<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Somnus</string>
+          </resources>
+          ''',
+              encoding="utf-8",
+          )
+          ET.parse(strings)
+
+          text = text.replace('android:label="somnus_sync"', 'android:label="@string/app_name"')
+          text = text.replace('android:label="Somnus Sync"', 'android:label="@string/app_name"')
+          manifest.write_text(text, encoding="utf-8")
+          ET.parse(manifest)
+
           health_permissions = values / "health_permissions.xml"
           health_permissions.write_text(
               '''<?xml version="1.0" encoding="utf-8"?>
@@ -154,6 +170,134 @@ jobs:
 
           print("AndroidManifest.xml is valid")
           print(manifest.read_text(encoding="utf-8"))
+          PY
+
+      - name: Configure release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import os
+          import re
+
+          required = [
+              "ANDROID_KEYSTORE_BASE64",
+              "ANDROID_KEYSTORE_PASSWORD",
+              "ANDROID_KEY_ALIAS",
+              "ANDROID_KEY_PASSWORD",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              print("Release signing secrets are not configured.")
+              print("APK will be built with the default temporary signing key and may require reinstall.")
+              raise SystemExit(0)
+
+          keystore = Path("android/app/somnus-release.jks")
+          keystore.write_bytes(base64.b64decode(os.environ["ANDROID_KEYSTORE_BASE64"]))
+
+          props = Path("android/key.properties")
+          props.write_text(
+              "\n".join(
+                  [
+                      f"storePassword={os.environ['ANDROID_KEYSTORE_PASSWORD']}",
+                      f"keyPassword={os.environ['ANDROID_KEY_PASSWORD']}",
+                      f"keyAlias={os.environ['ANDROID_KEY_ALIAS']}",
+                      "storeFile=somnus-release.jks",
+                      "",
+                  ]
+              ),
+              encoding="utf-8",
+          )
+
+          kts = Path("android/app/build.gradle.kts")
+          groovy = Path("android/app/build.gradle")
+
+          if kts.exists():
+              text = kts.read_text(encoding="utf-8")
+              if "keystoreProperties" not in text:
+                  text = (
+                      "import java.util.Properties\n"
+                      "import java.io.FileInputStream\n\n"
+                      "val keystoreProperties = Properties()\n"
+                      "val keystorePropertiesFile = rootProject.file(\"key.properties\")\n"
+                      "if (keystorePropertiesFile.exists()) {\n"
+                      "    keystoreProperties.load(FileInputStream(keystorePropertiesFile))\n"
+                      "}\n\n"
+                      + text
+                  )
+
+              release_signing_config = (
+                  "    signingConfigs {\n"
+                  "        create(\"release\") {\n"
+                  "            keyAlias = keystoreProperties[\"keyAlias\"] as String\n"
+                  "            keyPassword = keystoreProperties[\"keyPassword\"] as String\n"
+                  "            storeFile = file(keystoreProperties[\"storeFile\"] as String)\n"
+                  "            storePassword = keystoreProperties[\"storePassword\"] as String\n"
+                  "        }\n"
+                  "    }\n\n"
+              )
+
+              if "create(\"release\")" not in text:
+                  build_types_marker = "    buildTypes {"
+                  if build_types_marker not in text:
+                      raise RuntimeError("buildTypes block not found in build.gradle.kts")
+                  text = text.replace(
+                      build_types_marker,
+                      release_signing_config + build_types_marker,
+                      1,
+                  )
+
+              text = re.sub(
+                  r"signingConfig\s*=\s*signingConfigs\.getByName\(\"debug\"\)",
+                  "signingConfig = signingConfigs.getByName(\"release\")",
+                  text,
+              )
+              kts.write_text(text, encoding="utf-8")
+              print(kts.read_text(encoding="utf-8"))
+
+          elif groovy.exists():
+              text = groovy.read_text(encoding="utf-8")
+              if "keystoreProperties" not in text:
+                  text = (
+                      "def keystoreProperties = new Properties()\n"
+                      "def keystorePropertiesFile = rootProject.file('key.properties')\n"
+                      "if (keystorePropertiesFile.exists()) {\n"
+                      "    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))\n"
+                      "}\n\n"
+                      + text
+                  )
+
+              release_signing_config = (
+                  "    signingConfigs {\n"
+                  "        release {\n"
+                  "            keyAlias keystoreProperties['keyAlias']\n"
+                  "            keyPassword keystoreProperties['keyPassword']\n"
+                  "            storeFile file(keystoreProperties['storeFile'])\n"
+                  "            storePassword keystoreProperties['storePassword']\n"
+                  "        }\n"
+                  "    }\n\n"
+              )
+
+              if "signingConfigs.release" not in text:
+                  build_types_marker = "    buildTypes {"
+                  if build_types_marker not in text:
+                      raise RuntimeError("buildTypes block not found in build.gradle")
+                  text = text.replace(
+                      build_types_marker,
+                      release_signing_config + build_types_marker,
+                      1,
+                  )
+
+              text = text.replace("signingConfig signingConfigs.debug", "signingConfig signingConfigs.release")
+              groovy.write_text(text, encoding="utf-8")
+              print(groovy.read_text(encoding="utf-8"))
+          else:
+              raise RuntimeError("Android app Gradle file not found")
           PY
 
       - name: Install dependencies
@@ -283,5 +427,5 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: somnus-sync-apk
+          name: somnus-apk
           path: flutter_app/build/app/outputs/flutter-apk/app-release.apk

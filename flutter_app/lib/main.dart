@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-26-clean-setup';
+const String appBuild = '2026-06-27-somnus-updates';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
@@ -753,7 +753,7 @@ class SomnusSyncApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Somnus Sync',
+      title: 'Somnus',
       theme: ThemeData(
         colorSchemeSeed: Colors.indigo,
         useMaterial3: true,
@@ -927,7 +927,7 @@ class _SetupScreenState extends State<SetupScreen> {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Somnus Sync'),
+        title: const Text('Somnus'),
         centerTitle: false,
       ),
       body: ListView(
