@@ -1020,7 +1020,7 @@ class _SetupScreenState extends State<SetupScreen> {
           const SizedBox(height: 24),
           DecoratedBox(
             decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.55),
+              color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.55),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Padding(
