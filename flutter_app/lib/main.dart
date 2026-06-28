@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-27-somnus-updates';
+const String appBuild = '2026-06-28-auto-sync-diagnostics';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
@@ -24,11 +24,15 @@ void callbackDispatcher() {
   Workmanager().executeTask((task, inputData) async {
     DartPluginRegistrant.ensureInitialized();
 
-    if (task != sleepTaskName) {
+    if (task != sleepTaskName && task != sleepTaskUniqueName) {
       return true;
     }
 
     final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('lastAutoRunAt', DateTime.now().toIso8601String());
+    await prefs.setString('lastAutoRunTask', task);
+    await prefs.remove('lastAutoError');
+
     final telegramId =
         inputData?['telegramId'] as String? ?? prefs.getString('telegramId') ?? '';
     final secret = inputData?['secret'] as String? ?? prefs.getString('secret') ?? '';
@@ -37,17 +41,23 @@ void callbackDispatcher() {
         defaultReportDelayMinutes;
 
     if (telegramId.isEmpty) {
+      await prefs.setString('lastAutoSkipReason', 'empty_telegram_id');
       return false;
     }
 
     try {
       final payload = await collectSleepPayload(telegramId);
+      await prefs.setString('lastAutoPayloadDate', sleepDateKey(payload));
       final shouldSend = await shouldSendAfterWake(
         payload: payload,
         delayMinutes: reportDelayMinutes,
         prefs: prefs,
       );
       if (!shouldSend) {
+        await prefs.setString(
+          'lastAutoSkipReason',
+          automaticSkipReason(payload, reportDelayMinutes, prefs),
+        );
         return true;
       }
 
@@ -57,8 +67,11 @@ void callbackDispatcher() {
         payload: payload,
       );
       await markScheduledReportSent(prefs, payload);
+      await prefs.setString('lastAutoSkipReason', 'sent');
       return true;
-    } catch (_) {
+    } catch (error) {
+      await prefs.setString('lastAutoError', error.toString());
+      await prefs.setString('lastAutoSkipReason', 'error');
       return false;
     }
   });
@@ -104,6 +117,28 @@ Future<bool> shouldSendAfterWake({
   }
 
   return prefs.getString('lastAutoSentSleepDate') != sleepDateKey(payload);
+}
+
+String automaticSkipReason(
+  Map<String, dynamic> payload,
+  int delayMinutes,
+  SharedPreferences prefs,
+) {
+  final sleepEnd = parseIsoDate(payload['sleep_end'] as String?);
+  if (sleepEnd == null) {
+    return 'no_sleep_end';
+  }
+
+  final readyAt = sleepEnd.add(Duration(minutes: delayMinutes));
+  if (DateTime.now().isBefore(readyAt)) {
+    return 'too_early_until_${readyAt.toIso8601String()}';
+  }
+
+  if (prefs.getString('lastAutoSentSleepDate') == sleepDateKey(payload)) {
+    return 'already_sent_${sleepDateKey(payload)}';
+  }
+
+  return 'unknown';
 }
 
 Future<void> markScheduledReportSent(SharedPreferences prefs, Map<String, dynamic> payload) async {
@@ -793,13 +828,65 @@ class _SetupScreenState extends State<SetupScreen> {
     final prefs = await SharedPreferences.getInstance();
     telegramController.text = prefs.getString('telegramId') ?? '';
     secretController.text = prefs.getString('secret') ?? '';
+    final lastSent = prefs.getString('lastAutoSentSleepDate');
+    final lastRun = prefs.getString('lastAutoRunAt');
+    final lastReason = prefs.getString('lastAutoSkipReason');
+    final lastError = prefs.getString('lastAutoError');
+
+    final statusLines = <String>[];
+    if (lastSent == null) {
+      statusLines.add('Выбери задержку после подъёма и включи синхронизацию.');
+    } else {
+      statusLines.add('Последний автоотчёт: $lastSent');
+    }
+    if (lastRun != null) {
+      statusLines.add('Фоновая проверка: ${formatStatusDateTime(lastRun)}');
+    }
+    if (lastReason != null) {
+      statusLines.add('Статус проверки: ${formatAutoReason(lastReason)}');
+    }
+    if (lastError != null) {
+      statusLines.add('Ошибка фона: $lastError');
+    }
+
     setState(() {
       reportDelayMinutes = prefs.getInt('reportDelayMinutes') ?? defaultReportDelayMinutes;
-      final lastSent = prefs.getString('lastAutoSentSleepDate');
-      status = lastSent == null
-          ? 'Выбери задержку после подъёма и включи синхронизацию'
-          : 'Последний автоотчёт: $lastSent';
+      status = statusLines.join('\n');
     });
+  }
+
+  String formatStatusDateTime(String value) {
+    final parsed = DateTime.tryParse(value);
+    if (parsed == null) {
+      return value;
+    }
+    final local = parsed.toLocal();
+    return '${local.day.toString().padLeft(2, '0')}.'
+        '${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  String formatAutoReason(String value) {
+    if (value == 'sent') {
+      return 'отправлено';
+    }
+    if (value == 'no_sleep_end') {
+      return 'сон найден, но без времени подъёма';
+    }
+    if (value.startsWith('too_early_until_')) {
+      return 'ещё рано, ждём задержку после подъёма';
+    }
+    if (value.startsWith('already_sent_')) {
+      return 'за эту ночь уже отправлено';
+    }
+    if (value == 'empty_telegram_id') {
+      return 'не указан Telegram ID';
+    }
+    if (value == 'error') {
+      return 'ошибка при фоновой отправке';
+    }
+    return value;
   }
 
   Future<void> pickReportDelay() async {

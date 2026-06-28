@@ -90,6 +90,14 @@ Report delivery depends on:
 - whether background activity is allowed for the APK
 - WorkManager scheduling decisions
 
+If manual test works but the automatic report does not arrive, open the APK and check the status block:
+
+- `Фоновая проверка` shows whether Android started the background task at all.
+- `Статус проверки` explains why the task did not send a report.
+- `Ошибка фона` shows the background exception if Android/Health Connect blocked the read.
+
+For better automatic delivery, allow background activity for the APK in Android battery settings.
+
 See Android permissions:
 
 ```text
