@@ -8,11 +8,12 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-28-auto-sync-diagnostics';
+const String appBuild = '2026-06-29-foreground-auto-sync';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
 const int defaultReportDelayMinutes = 30;
+const String cachedSleepPayloadKey = 'cachedSleepPayload';
 
 const List<HealthConnectDataType> sleepTypes = [
   HealthConnectDataType.SleepSession,
@@ -46,7 +47,21 @@ void callbackDispatcher() {
     }
 
     try {
-      final payload = await collectSleepPayload(telegramId);
+      Map<String, dynamic> payload;
+      try {
+        payload = await collectSleepPayload(telegramId);
+        await cacheSleepPayload(prefs, payload);
+      } catch (error) {
+        await prefs.setString('lastAutoError', error.toString());
+        final cachedPayload = loadCachedSleepPayload(prefs);
+        if (cachedPayload == null) {
+          await prefs.setString('lastAutoSkipReason', 'error');
+          return false;
+        }
+        payload = cachedPayload;
+        await prefs.setString('lastAutoSkipReason', 'using_cached_payload');
+      }
+
       await prefs.setString('lastAutoPayloadDate', sleepDateKey(payload));
       final shouldSend = await shouldSendAfterWake(
         payload: payload,
@@ -143,6 +158,28 @@ String automaticSkipReason(
 
 Future<void> markScheduledReportSent(SharedPreferences prefs, Map<String, dynamic> payload) async {
   await prefs.setString('lastAutoSentSleepDate', sleepDateKey(payload));
+}
+
+Future<void> cacheSleepPayload(SharedPreferences prefs, Map<String, dynamic> payload) async {
+  await prefs.setString(cachedSleepPayloadKey, jsonEncode(payload));
+  await prefs.setString('lastCachedSleepDate', sleepDateKey(payload));
+  await prefs.setString('lastCachedAt', DateTime.now().toIso8601String());
+}
+
+Map<String, dynamic>? loadCachedSleepPayload(SharedPreferences prefs) {
+  final raw = prefs.getString(cachedSleepPayloadKey);
+  if (raw == null || raw.isEmpty) {
+    return null;
+  }
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is Map) {
+      return decoded.map((key, value) => MapEntry(key.toString(), value));
+    }
+  } catch (_) {
+    return null;
+  }
+  return null;
 }
 
 Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
@@ -832,6 +869,7 @@ class _SetupScreenState extends State<SetupScreen> {
     final lastRun = prefs.getString('lastAutoRunAt');
     final lastReason = prefs.getString('lastAutoSkipReason');
     final lastError = prefs.getString('lastAutoError');
+    final lastCached = prefs.getString('lastCachedSleepDate');
 
     final statusLines = <String>[];
     if (lastSent == null) {
@@ -845,6 +883,9 @@ class _SetupScreenState extends State<SetupScreen> {
     if (lastReason != null) {
       statusLines.add('Статус проверки: ${formatAutoReason(lastReason)}');
     }
+    if (lastCached != null) {
+      statusLines.add('Последний прочитанный сон: $lastCached');
+    }
     if (lastError != null) {
       statusLines.add('Ошибка фона: $lastError');
     }
@@ -853,6 +894,8 @@ class _SetupScreenState extends State<SetupScreen> {
       reportDelayMinutes = prefs.getInt('reportDelayMinutes') ?? defaultReportDelayMinutes;
       status = statusLines.join('\n');
     });
+
+    Future.microtask(() => refreshAndSendIfReady(showStatus: false));
   }
 
   String formatStatusDateTime(String value) {
@@ -886,7 +929,59 @@ class _SetupScreenState extends State<SetupScreen> {
     if (value == 'error') {
       return 'ошибка при фоновой отправке';
     }
+    if (value == 'using_cached_payload') {
+      return 'фон использовал сохранённый сон';
+    }
     return value;
+  }
+
+  Future<void> refreshAndSendIfReady({required bool showStatus}) async {
+    final telegramId = telegramController.text.trim();
+    final secret = secretController.text.trim();
+    if (telegramId.isEmpty) {
+      return;
+    }
+
+    try {
+      if (showStatus && mounted) {
+        setState(() => status = 'Проверяю свежий сон...');
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      final payload = await collectSleepPayload(telegramId);
+      await cacheSleepPayload(prefs, payload);
+      await prefs.setString('lastForegroundReadAt', DateTime.now().toIso8601String());
+
+      final shouldSend = await shouldSendAfterWake(
+        payload: payload,
+        delayMinutes: reportDelayMinutes,
+        prefs: prefs,
+      );
+
+      if (!shouldSend) {
+        final reason = automaticSkipReason(payload, reportDelayMinutes, prefs);
+        await prefs.setString('lastAutoSkipReason', reason);
+        if (showStatus && mounted) {
+          setState(() => status = 'Сон прочитан. ${formatAutoReason(reason)}.');
+        }
+        return;
+      }
+
+      await sendSleepPayload(
+        backendUrl: backendUrl,
+        secret: secret,
+        payload: payload,
+      );
+      await markScheduledReportSent(prefs, payload);
+      await prefs.setString('lastAutoSkipReason', 'sent');
+      if (mounted) {
+        setState(() => status = 'Отчёт отправлен автоматически при открытии APK.');
+      }
+    } catch (error) {
+      if (showStatus && mounted) {
+        setState(() => status = 'Не удалось проверить сон: $error');
+      }
+    }
   }
 
   Future<void> pickReportDelay() async {
@@ -979,7 +1074,7 @@ class _SetupScreenState extends State<SetupScreen> {
         existingWorkPolicy: ExistingPeriodicWorkPolicy.replace,
       );
 
-      setState(() => status = 'Готово. Отчёт через $reportDelayMinutes мин после подъёма.');
+      await refreshAndSendIfReady(showStatus: true);
     } catch (error) {
       setState(() => status = 'Ошибка запуска: $error');
     }
@@ -997,6 +1092,8 @@ class _SetupScreenState extends State<SetupScreen> {
       setState(() => status = 'Отправляю тест...');
 
       final payload = await collectSleepPayload(telegramId);
+      final prefs = await SharedPreferences.getInstance();
+      await cacheSleepPayload(prefs, payload);
       await sendSleepPayload(
         backendUrl: backendUrl,
         secret: secretController.text.trim(),
