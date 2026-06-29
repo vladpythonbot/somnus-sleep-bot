@@ -122,3 +122,45 @@ def get_recent_reports(telegram_id: int, limit: int = 30) -> list[SleepApkPayloa
             )
         )
     return reports
+
+
+def update_latest_total_sleep(telegram_id: int, total_sleep_minutes: int) -> SleepApkPayload | None:
+    history = get_recent_reports(telegram_id, limit=1)
+    if not history:
+        return None
+
+    latest = history[0]
+    corrected = SleepApkPayload(
+        telegram_id=latest.telegram_id,
+        date=latest.date,
+        sleep_start=latest.sleep_start,
+        sleep_end=latest.sleep_end,
+        total_sleep_minutes=total_sleep_minutes,
+        deep_sleep_minutes=latest.deep_sleep_minutes,
+        light_sleep_minutes=max(0, total_sleep_minutes - latest.deep_sleep_minutes - latest.rem_sleep_minutes),
+        rem_sleep_minutes=latest.rem_sleep_minutes,
+        awake_minutes=latest.awake_minutes,
+    )
+    index, _, _ = recovery_index(corrected)
+
+    with connect() as connection:
+        connection.execute(
+            """
+            UPDATE sleep_reports
+            SET total_sleep_minutes = ?,
+                light_sleep_minutes = ?,
+                recovery_index = ?,
+                received_at = ?
+            WHERE telegram_id = ? AND date_key = ?
+            """,
+            (
+                total_sleep_minutes,
+                corrected.light_sleep_minutes,
+                index,
+                datetime.now().isoformat(timespec="seconds"),
+                telegram_id,
+                report_date_key(latest),
+            ),
+        )
+
+    return corrected

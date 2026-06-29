@@ -3,10 +3,33 @@ from aiogram.filters import Command
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from sleep_analysis import build_sleep_report, build_statistics_report
-from sleep_storage import get_recent_reports, init_db
+from sleep_storage import get_recent_reports, init_db, update_latest_total_sleep
 
 
 router = Router()
+
+
+def parse_sleep_minutes(value: str) -> int | None:
+    value = value.strip().lower().replace(",", ".")
+    if not value:
+        return None
+
+    if ":" in value:
+        hours_text, minutes_text = value.split(":", 1)
+        if not hours_text.isdigit() or not minutes_text.isdigit():
+            return None
+        return int(hours_text) * 60 + int(minutes_text)
+
+    if value.endswith("ч"):
+        value = value[:-1].strip()
+
+    number = float(value) if value.replace(".", "", 1).isdigit() else None
+    if number is None:
+        return None
+
+    if number <= 24:
+        return round(number * 60)
+    return round(number)
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -50,6 +73,8 @@ async def help_command(message: Message) -> None:
         "Нажми в APK кнопку <b>Сохранить и включить</b> и разреши доступ к данным сна.\n\n"
         "5️⃣ <b>Отчёт после подъёма</b>\n"
         "APK смотрит время подъёма, ждёт выбранную задержку и отправляет утренний отчёт один раз за ночь.\n\n"
+        "Если браслет сел и сон записался не полностью, исправь последнюю ночь:\n"
+        "<code>/fixsleep 8:00</code>\n\n"
         "Статистика за 7 и 30 дней доступна по кнопке <b>📊 Статистика</b>."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
@@ -84,6 +109,49 @@ async def stats(message: Message) -> None:
     history = get_recent_reports(message.from_user.id)
     await message.answer(
         build_statistics_report(history),
+        parse_mode="HTML",
+        reply_markup=main_keyboard(),
+    )
+
+
+@router.message(Command("fixsleep"))
+async def fix_sleep(message: Message) -> None:
+    init_db()
+    command_text = message.text or ""
+    parts = command_text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer(
+            "✏️ <b>Поправка сна</b>\n\n"
+            "Исправляет длительность последней ночи, если браслет сел или снялся.\n\n"
+            "Пример:\n"
+            "<code>/fixsleep 8:00</code>\n"
+            "<code>/fixsleep 480</code>",
+            parse_mode="HTML",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    minutes = parse_sleep_minutes(parts[1])
+    if minutes is None or minutes < 60 or minutes > 16 * 60:
+        await message.answer(
+            "Не понял длительность. Напиши, например: <code>/fixsleep 8:00</code> или <code>/fixsleep 480</code>.",
+            parse_mode="HTML",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    corrected = update_latest_total_sleep(message.from_user.id, minutes)
+    if corrected is None:
+        await message.answer(
+            "Нет сохранённых ночей для исправления.",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    history = get_recent_reports(message.from_user.id)
+    await message.answer(
+        "✏️ Длительность последней ночи исправлена.\n\n"
+        + build_sleep_report(history[0], history),
         parse_mode="HTML",
         reply_markup=main_keyboard(),
     )
