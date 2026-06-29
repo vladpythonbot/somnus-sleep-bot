@@ -96,6 +96,7 @@ If manual test works but the automatic report does not arrive, open the APK and 
 - `Статус проверки` explains why the task did not send a report.
 - `Ошибка фона` shows the background exception if Android/Health Connect blocked the read.
 - If Android blocks Health Connect in the background, the APK also checks sleep when opened and sends the report automatically if the wake-up delay has passed.
+- If the APK shows `READ_SLEEP` permission errors, press `Save and enable` again and allow Sleep access in Health Connect.
 
 For better automatic delivery, allow background activity for the APK in Android battery settings.
 

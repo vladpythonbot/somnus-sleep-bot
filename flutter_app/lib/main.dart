@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-29-foreground-auto-sync';
+const String appBuild = '2026-06-29-permission-refresh';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
@@ -935,6 +935,34 @@ class _SetupScreenState extends State<SetupScreen> {
     return value;
   }
 
+  Future<bool> ensureHealthConnectPermissions() async {
+    final isSupported = await HealthConnectFactory.isApiSupported();
+    if (!isSupported) {
+      if (mounted) {
+        setState(() => status = 'Health Connect не поддерживается на этом устройстве');
+      }
+      return false;
+    }
+
+    final isAvailable = await HealthConnectFactory.isAvailable();
+    if (!isAvailable) {
+      await HealthConnectFactory.installHealthConnect();
+      if (mounted) {
+        setState(() => status = 'Установи Health Connect и повтори запуск');
+      }
+      return false;
+    }
+
+    final granted = await HealthConnectFactory.requestPermissions(
+      sleepTypes,
+      readOnly: true,
+    );
+    if (!granted && mounted) {
+      setState(() => status = 'Разреши доступ к сну в Health Connect и повтори.');
+    }
+    return granted;
+  }
+
   Future<void> refreshAndSendIfReady({required bool showStatus}) async {
     final telegramId = telegramController.text.trim();
     final secret = secretController.text.trim();
@@ -945,6 +973,13 @@ class _SetupScreenState extends State<SetupScreen> {
     try {
       if (showStatus && mounted) {
         setState(() => status = 'Проверяю свежий сон...');
+      }
+
+      if (showStatus) {
+        final granted = await ensureHealthConnectPermissions();
+        if (!granted) {
+          return;
+        }
       }
 
       final prefs = await SharedPreferences.getInstance();
@@ -1023,27 +1058,9 @@ class _SetupScreenState extends State<SetupScreen> {
     try {
       setState(() => status = 'Проверяю Health Connect...');
 
-      final isSupported = await HealthConnectFactory.isApiSupported();
-      if (!isSupported) {
-        setState(() => status = 'Health Connect не поддерживается на этом устройстве');
-        return;
-      }
-
-      final isAvailable = await HealthConnectFactory.isAvailable();
-      if (!isAvailable) {
-        await HealthConnectFactory.installHealthConnect();
-        setState(() => status = 'Установи Health Connect и повтори запуск');
-        return;
-      }
-
       setState(() => status = 'Запрашиваю разрешения...');
-
-      final granted = await HealthConnectFactory.requestPermissions(
-        sleepTypes,
-        readOnly: true,
-      );
+      final granted = await ensureHealthConnectPermissions();
       if (!granted) {
-        setState(() => status = 'Разрешения не выданы');
         return;
       }
 
@@ -1089,6 +1106,12 @@ class _SetupScreenState extends State<SetupScreen> {
     }
 
     try {
+      setState(() => status = 'Проверяю разрешения...');
+      final granted = await ensureHealthConnectPermissions();
+      if (!granted) {
+        return;
+      }
+
       setState(() => status = 'Отправляю тест...');
 
       final payload = await collectSleepPayload(telegramId);
