@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from os import getenv
 from pathlib import Path
 
 from sleep_analysis import SleepApkPayload, recovery_index, resolved_total_sleep
 
 
-DB_PATH = Path(getenv("DB_PATH", "sleep_bot.db"))
+def default_db_path() -> Path:
+    if getenv("DB_PATH"):
+        return Path(getenv("DB_PATH", "sleep_bot.db"))
+    railway_volume = Path("/data")
+    if railway_volume.exists():
+        return railway_volume / "sleep_bot.db"
+    return Path("sleep_bot.db")
+
+
+DB_PATH = default_db_path()
 
 
 def connect() -> sqlite3.Connection:
@@ -35,10 +44,19 @@ def init_db() -> None:
                 rem_sleep_minutes INTEGER NOT NULL,
                 awake_minutes INTEGER NOT NULL,
                 recovery_index INTEGER NOT NULL,
+                is_manual_corrected INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(telegram_id, date_key)
             )
             """
         )
+        existing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(sleep_reports)").fetchall()
+        }
+        if "is_manual_corrected" not in existing_columns:
+            connection.execute(
+                "ALTER TABLE sleep_reports ADD COLUMN is_manual_corrected INTEGER NOT NULL DEFAULT 0"
+            )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_sleep_reports_user_date ON sleep_reports(telegram_id, date_key)"
         )
@@ -68,14 +86,38 @@ def save_sleep_report(payload: SleepApkPayload) -> None:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(telegram_id, date_key) DO UPDATE SET
                 received_at = excluded.received_at,
-                sleep_start = excluded.sleep_start,
-                sleep_end = excluded.sleep_end,
-                total_sleep_minutes = excluded.total_sleep_minutes,
-                deep_sleep_minutes = excluded.deep_sleep_minutes,
-                light_sleep_minutes = excluded.light_sleep_minutes,
-                rem_sleep_minutes = excluded.rem_sleep_minutes,
-                awake_minutes = excluded.awake_minutes,
-                recovery_index = excluded.recovery_index
+                sleep_start = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.sleep_start
+                    ELSE excluded.sleep_start
+                END,
+                sleep_end = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.sleep_end
+                    ELSE excluded.sleep_end
+                END,
+                total_sleep_minutes = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.total_sleep_minutes
+                    ELSE excluded.total_sleep_minutes
+                END,
+                deep_sleep_minutes = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.deep_sleep_minutes
+                    ELSE excluded.deep_sleep_minutes
+                END,
+                light_sleep_minutes = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.light_sleep_minutes
+                    ELSE excluded.light_sleep_minutes
+                END,
+                rem_sleep_minutes = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.rem_sleep_minutes
+                    ELSE excluded.rem_sleep_minutes
+                END,
+                awake_minutes = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.awake_minutes
+                    ELSE excluded.awake_minutes
+                END,
+                recovery_index = CASE
+                    WHEN sleep_reports.is_manual_corrected = 1 THEN sleep_reports.recovery_index
+                    ELSE excluded.recovery_index
+                END
             """,
             (
                 payload.telegram_id,
@@ -124,17 +166,73 @@ def get_recent_reports(telegram_id: int, limit: int = 30) -> list[SleepApkPayloa
     return reports
 
 
-def update_latest_total_sleep(telegram_id: int, total_sleep_minutes: int) -> SleepApkPayload | None:
-    history = get_recent_reports(telegram_id, limit=1)
-    if not history:
+def get_report_by_date_key(telegram_id: int, target_date_key: str) -> SleepApkPayload | None:
+    with connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM sleep_reports
+            WHERE telegram_id = ? AND date_key = ?
+            """,
+            (telegram_id, target_date_key),
+        ).fetchone()
+
+    if row is None:
         return None
 
-    latest = history[0]
+    return SleepApkPayload(
+        telegram_id=row["telegram_id"],
+        date=row["date_key"],
+        sleep_start=row["sleep_start"],
+        sleep_end=row["sleep_end"],
+        total_sleep_minutes=row["total_sleep_minutes"],
+        deep_sleep_minutes=row["deep_sleep_minutes"],
+        light_sleep_minutes=row["light_sleep_minutes"],
+        rem_sleep_minutes=row["rem_sleep_minutes"],
+        awake_minutes=row["awake_minutes"],
+    )
+
+
+def iso_with_time(date_key_value: str, time_value: str) -> str:
+    return f"{date_key_value}T{time_value}:00"
+
+
+def corrected_sleep_window(latest: SleepApkPayload, total_sleep_minutes: int, wake_time: str | None) -> tuple[str | None, str | None]:
+    sleep_start = latest.sleep_start
+    sleep_end = latest.sleep_end
+    if not wake_time:
+        return sleep_start, sleep_end
+
+    date_key_value = report_date_key(latest)
+    sleep_end = iso_with_time(date_key_value, wake_time)
+    end_dt = datetime.fromisoformat(sleep_end)
+    start_dt = end_dt - timedelta(minutes=total_sleep_minutes + max(0, latest.awake_minutes))
+    sleep_start = start_dt.isoformat(timespec="seconds")
+    return sleep_start, sleep_end
+
+
+def update_total_sleep(
+    telegram_id: int,
+    total_sleep_minutes: int,
+    target_date_key: str | None = None,
+    wake_time: str | None = None,
+) -> SleepApkPayload | None:
+    if target_date_key:
+        latest = get_report_by_date_key(telegram_id, target_date_key)
+        if latest is None:
+            return None
+    else:
+        history = get_recent_reports(telegram_id, limit=1)
+        if not history:
+            return None
+        latest = history[0]
+
+    sleep_start, sleep_end = corrected_sleep_window(latest, total_sleep_minutes, wake_time)
     corrected = SleepApkPayload(
         telegram_id=latest.telegram_id,
         date=latest.date,
-        sleep_start=latest.sleep_start,
-        sleep_end=latest.sleep_end,
+        sleep_start=sleep_start,
+        sleep_end=sleep_end,
         total_sleep_minutes=total_sleep_minutes,
         deep_sleep_minutes=latest.deep_sleep_minutes,
         light_sleep_minutes=max(0, total_sleep_minutes - latest.deep_sleep_minutes - latest.rem_sleep_minutes),
@@ -148,13 +246,18 @@ def update_latest_total_sleep(telegram_id: int, total_sleep_minutes: int) -> Sle
             """
             UPDATE sleep_reports
             SET total_sleep_minutes = ?,
+                sleep_start = ?,
+                sleep_end = ?,
                 light_sleep_minutes = ?,
                 recovery_index = ?,
-                received_at = ?
+                received_at = ?,
+                is_manual_corrected = 1
             WHERE telegram_id = ? AND date_key = ?
             """,
             (
                 total_sleep_minutes,
+                corrected.sleep_start,
+                corrected.sleep_end,
                 corrected.light_sleep_minutes,
                 index,
                 datetime.now().isoformat(timespec="seconds"),
@@ -164,3 +267,7 @@ def update_latest_total_sleep(telegram_id: int, total_sleep_minutes: int) -> Sle
         )
 
     return corrected
+
+
+def update_latest_total_sleep(telegram_id: int, total_sleep_minutes: int) -> SleepApkPayload | None:
+    return update_total_sleep(telegram_id, total_sleep_minutes)

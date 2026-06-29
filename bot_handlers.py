@@ -1,12 +1,18 @@
+import re
+from datetime import datetime
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from sleep_analysis import build_sleep_report, build_statistics_report
-from sleep_storage import get_recent_reports, init_db, update_latest_total_sleep
+from sleep_storage import get_recent_reports, init_db, update_total_sleep
 
 
 router = Router()
+
+DATE_PATTERN = re.compile(r"^\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?$|^\d{4}-\d{1,2}-\d{1,2}$")
+TIME_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
 
 
 def parse_sleep_minutes(value: str) -> int | None:
@@ -30,6 +36,72 @@ def parse_sleep_minutes(value: str) -> int | None:
     if number <= 24:
         return round(number * 60)
     return round(number)
+
+
+def parse_date_key(value: str) -> str | None:
+    value = value.strip().rstrip(",")
+    if not DATE_PATTERN.match(value):
+        return None
+
+    current_year = datetime.now().year
+    try:
+        if re.match(r"^\d{4}-\d{1,2}-\d{1,2}$", value):
+            return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+
+        separator = "." if "." in value else "/" if "/" in value else "-"
+        parts = value.split(separator)
+        day = int(parts[0])
+        month = int(parts[1])
+        year = current_year
+        if len(parts) == 3:
+            year = int(parts[2])
+            if year < 100:
+                year += 2000
+        return datetime(year, month, day).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
+def parse_clock_time(value: str) -> str | None:
+    value = value.strip().lower().replace("wake=", "").replace("подъем=", "").replace("подъём=", "")
+    if not TIME_PATTERN.match(value):
+        return None
+    hours_text, minutes_text = value.split(":", 1)
+    hours = int(hours_text)
+    minutes = int(minutes_text)
+    if hours > 23 or minutes > 59:
+        return None
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def parse_fixsleep_args(raw_args: str) -> tuple[int | None, str | None, str | None]:
+    duration_minutes: int | None = None
+    target_date_key: str | None = None
+    wake_time: str | None = None
+
+    for token in raw_args.split():
+        normalized = token.strip().rstrip(",")
+        if not normalized:
+            continue
+
+        if target_date_key is None:
+            target_date_key = parse_date_key(normalized)
+            if target_date_key:
+                continue
+
+        if normalized.lower().startswith(("wake=", "подъем=", "подъём=")):
+            wake_time = parse_clock_time(normalized)
+            continue
+
+        if duration_minutes is None:
+            duration_minutes = parse_sleep_minutes(normalized)
+            if duration_minutes is not None:
+                continue
+
+        if wake_time is None:
+            wake_time = parse_clock_time(normalized)
+
+    return duration_minutes, target_date_key, wake_time
 
 
 def main_keyboard() -> ReplyKeyboardMarkup:
@@ -122,36 +194,54 @@ async def fix_sleep(message: Message) -> None:
     if len(parts) < 2:
         await message.answer(
             "✏️ <b>Поправка сна</b>\n\n"
-            "Исправляет длительность последней ночи, если браслет сел или снялся.\n\n"
-            "Пример:\n"
-            "<code>/fixsleep 8:00</code>\n"
-            "<code>/fixsleep 480</code>",
+            "Если браслет сел или снялся, можно исправить длительность сна.\n\n"
+            "Примеры:\n"
+            "<code>/fixsleep 8:00</code> — последняя ночь\n"
+            "<code>/fixsleep 26.06 8:00</code> — конкретная дата\n"
+            "<code>/fixsleep 26.06 8:00 07:30</code> — дата, длительность и время подъёма",
             parse_mode="HTML",
             reply_markup=main_keyboard(),
         )
         return
 
-    minutes = parse_sleep_minutes(parts[1])
+    minutes, target_date_key, wake_time = parse_fixsleep_args(parts[1])
     if minutes is None or minutes < 60 or minutes > 16 * 60:
         await message.answer(
-            "Не понял длительность. Напиши, например: <code>/fixsleep 8:00</code> или <code>/fixsleep 480</code>.",
+            "Не понял длительность. Напиши так: <code>/fixsleep 8:00</code> или <code>/fixsleep 26.06 8:00 07:30</code>.",
             parse_mode="HTML",
             reply_markup=main_keyboard(),
         )
         return
 
-    corrected = update_latest_total_sleep(message.from_user.id, minutes)
+    corrected = update_total_sleep(
+        message.from_user.id,
+        minutes,
+        target_date_key=target_date_key,
+        wake_time=wake_time,
+    )
     if corrected is None:
+        date_hint = f" за {target_date_key}" if target_date_key else ""
         await message.answer(
-            "Нет сохранённых ночей для исправления.",
+            f"Нет сохранённой ночи{date_hint}. Сначала должен прийти хотя бы один отчёт из APK.",
             reply_markup=main_keyboard(),
         )
         return
 
     history = get_recent_reports(message.from_user.id)
+    details = []
+    if target_date_key:
+        details.append(f"дата: <b>{target_date_key}</b>")
+    if wake_time:
+        details.append(f"подъём: <b>{wake_time}</b>")
+    details_text = "\n".join(f"• {item}" for item in details)
+    if details_text:
+        details_text += "\n\n"
+
     await message.answer(
-        "✏️ Длительность последней ночи исправлена.\n\n"
-        + build_sleep_report(history[0], history),
+        "✏️ Сон исправлен вручную.\n"
+        "Автоматическая отправка APK больше не перезатрёт эту ночь.\n\n"
+        f"{details_text}"
+        + build_sleep_report(corrected, history),
         parse_mode="HTML",
         reply_markup=main_keyboard(),
     )
