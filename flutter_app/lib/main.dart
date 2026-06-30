@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-29-permission-refresh';
+const String appBuild = '2026-06-30-clear-auto-status';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
@@ -99,6 +99,10 @@ String todayKey() {
       '${now.day.toString().padLeft(2, '0')}';
 }
 
+bool isBeforeToday(String dateKey) {
+  return dateKey.compareTo(todayKey()) < 0;
+}
+
 DateTime? parseIsoDate(String? value) {
   if (value == null || value.isEmpty) {
     return null;
@@ -149,8 +153,12 @@ String automaticSkipReason(
     return 'too_early_until_${readyAt.toIso8601String()}';
   }
 
-  if (prefs.getString('lastAutoSentSleepDate') == sleepDateKey(payload)) {
-    return 'already_sent_${sleepDateKey(payload)}';
+  final payloadDate = sleepDateKey(payload);
+  if (prefs.getString('lastAutoSentSleepDate') == payloadDate) {
+    if (isBeforeToday(payloadDate)) {
+      return 'no_new_sleep_$payloadDate';
+    }
+    return 'already_sent_$payloadDate';
   }
 
   return 'unknown';
@@ -870,6 +878,7 @@ class _SetupScreenState extends State<SetupScreen> {
     final lastReason = prefs.getString('lastAutoSkipReason');
     final lastError = prefs.getString('lastAutoError');
     final lastCached = prefs.getString('lastCachedSleepDate');
+    final lastForegroundRead = prefs.getString('lastForegroundReadAt');
 
     final statusLines = <String>[];
     if (lastSent == null) {
@@ -880,6 +889,9 @@ class _SetupScreenState extends State<SetupScreen> {
     if (lastRun != null) {
       statusLines.add('Фоновая проверка: ${formatStatusDateTime(lastRun)}');
     }
+    if (lastForegroundRead != null) {
+      statusLines.add('Проверка при открытии: ${formatStatusDateTime(lastForegroundRead)}');
+    }
     if (lastReason != null) {
       statusLines.add('Статус проверки: ${formatAutoReason(lastReason)}');
     }
@@ -887,7 +899,7 @@ class _SetupScreenState extends State<SetupScreen> {
       statusLines.add('Последний прочитанный сон: $lastCached');
     }
     if (lastError != null) {
-      statusLines.add('Ошибка фона: $lastError');
+      statusLines.add('Последняя ошибка фона: $lastError');
     }
 
     setState(() {
@@ -922,6 +934,10 @@ class _SetupScreenState extends State<SetupScreen> {
     }
     if (value.startsWith('already_sent_')) {
       return 'за эту ночь уже отправлено';
+    }
+    if (value.startsWith('no_new_sleep_')) {
+      final date = value.replaceFirst('no_new_sleep_', '');
+      return 'нового сна пока нет, Health Connect отдаёт $date';
     }
     if (value == 'empty_telegram_id') {
       return 'не указан Telegram ID';
@@ -985,6 +1001,8 @@ class _SetupScreenState extends State<SetupScreen> {
       final prefs = await SharedPreferences.getInstance();
       final payload = await collectSleepPayload(telegramId);
       await cacheSleepPayload(prefs, payload);
+      final payloadDate = sleepDateKey(payload);
+      await prefs.setString('lastAutoPayloadDate', payloadDate);
       await prefs.setString('lastForegroundReadAt', DateTime.now().toIso8601String());
 
       final shouldSend = await shouldSendAfterWake(
@@ -996,8 +1014,12 @@ class _SetupScreenState extends State<SetupScreen> {
       if (!shouldSend) {
         final reason = automaticSkipReason(payload, reportDelayMinutes, prefs);
         await prefs.setString('lastAutoSkipReason', reason);
-        if (showStatus && mounted) {
-          setState(() => status = 'Сон прочитан. ${formatAutoReason(reason)}.');
+        if (mounted) {
+          setState(
+            () => status = 'Проверка при открытии выполнена.\n'
+                'Последний прочитанный сон: $payloadDate\n'
+                'Статус: ${formatAutoReason(reason)}.',
+          );
         }
         return;
       }
@@ -1013,8 +1035,8 @@ class _SetupScreenState extends State<SetupScreen> {
         setState(() => status = 'Отчёт отправлен автоматически при открытии APK.');
       }
     } catch (error) {
-      if (showStatus && mounted) {
-        setState(() => status = 'Не удалось проверить сон: $error');
+      if (mounted) {
+        setState(() => status = 'Не удалось проверить сон при открытии: $error');
       }
     }
   }
