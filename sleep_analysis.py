@@ -41,6 +41,10 @@ def normalize_date(value: str | None) -> str:
         return value
 
 
+def sleep_report_date(payload: SleepApkPayload) -> str:
+    return normalize_date(payload.sleep_end or payload.date or payload.sleep_start)
+
+
 def format_time(value: str | None) -> str | None:
     if not value:
         return None
@@ -428,7 +432,7 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
 
     return (
         "🌙 <b>Отчёт о сне</b>\n\n"
-        f"📅 Дата: <b>{normalize_date(payload.date)}</b>\n"
+        f"📅 Дата: <b>{sleep_report_date(payload)}</b>\n"
         f"{sleep_window}"
         f"🛌 Всего сна: <b>{minutes_to_hm(total)}</b>\n"
         f"🟦 Глубокий: <b>{minutes_to_hm(deep)}</b> · {deep_percent}%\n"
