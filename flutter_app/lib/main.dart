@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-30-clear-auto-status';
+const String appBuild = '2026-06-30-stage-window-fallback';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
@@ -205,7 +205,7 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
     endTime: now,
   );
 
-  final sleepWindow = findLatestSleepWindow(sessionRecords);
+  final sleepWindow = findLatestSleepWindow(sessionRecords, stageRecords);
   final parsed = parseSleepRecords(
     [sessionRecords, stageRecords],
     windowStart: sleepWindow?.start,
@@ -218,6 +218,7 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
       'stage_record_count': countRecordLikeItems(stageRecords),
       'selected_sleep_start': sleepWindow?.start.toIso8601String(),
       'selected_sleep_end': sleepWindow?.end.toIso8601String(),
+      'selected_sleep_source': sleepWindow?.source,
       'session_sample': compactDebugSample(sessionRecords),
       'stage_sample': compactDebugSample(stageRecords),
     });
@@ -280,10 +281,11 @@ class ParsedSleep {
 }
 
 class SleepWindow {
-  const SleepWindow({required this.start, required this.end});
+  const SleepWindow({required this.start, required this.end, required this.source});
 
   final DateTime start;
   final DateTime end;
+  final String source;
 }
 
 ParsedSleep parseSleepRecords(
@@ -403,7 +405,19 @@ ParsedSleep parseSleepRecords(
   );
 }
 
-SleepWindow? findLatestSleepWindow(dynamic records) {
+SleepWindow? findLatestSleepWindow(dynamic sessionRecords, dynamic stageRecords) {
+  final sessionWindow = findLatestSessionWindow(sessionRecords);
+  final stageWindow = findLatestStageWindow(stageRecords);
+
+  if (stageWindow != null &&
+      (sessionWindow == null || stageWindow.end.isAfter(sessionWindow.end.add(const Duration(minutes: 30))))) {
+    return stageWindow;
+  }
+
+  return sessionWindow ?? stageWindow;
+}
+
+SleepWindow? findLatestSessionWindow(dynamic records) {
   SleepWindow? selected;
   var selectedMinutes = 0;
 
@@ -425,7 +439,7 @@ SleepWindow? findLatestSleepWindow(dynamic records) {
         if (selected == null ||
             end.isAfter(selected!.end) ||
             (end.isAtSameMomentAs(selected!.end) && minutes > selectedMinutes)) {
-          selected = SleepWindow(start: start, end: end);
+          selected = SleepWindow(start: start, end: end, source: 'session');
           selectedMinutes = minutes;
         }
       }
@@ -440,6 +454,68 @@ SleepWindow? findLatestSleepWindow(dynamic records) {
 
   visit(records);
   return selected;
+}
+
+SleepWindow? findLatestStageWindow(dynamic records) {
+  final stageWindows = <SleepWindow>[];
+
+  void visit(dynamic value) {
+    if (value is List) {
+      for (final item in value) {
+        visit(item);
+      }
+      return;
+    }
+    if (value is Map) {
+      final map = value.map((key, item) => MapEntry(key.toString(), item));
+      final start = extractStartTime(map);
+      final end = extractEndTime(map);
+      final stage = classifySleepStage(map, map.values.join(' ').toLowerCase());
+      final minutes = extractDurationMinutes(map);
+
+      if (stage != null && start != null && end != null && minutes > 0 && minutes <= 8 * 60) {
+        stageWindows.add(SleepWindow(start: start, end: end, source: 'stage'));
+      }
+
+      for (final child in map.values) {
+        if (child is List || child is Map) {
+          visit(child);
+        }
+      }
+    }
+  }
+
+  visit(records);
+  if (stageWindows.isEmpty) {
+    return null;
+  }
+
+  stageWindows.sort((a, b) => b.end.compareTo(a.end));
+  final latestEnd = stageWindows.first.end;
+  final minStart = latestEnd.subtract(const Duration(hours: 20));
+  final latestNight = stageWindows.where((item) {
+    return item.end.isAfter(minStart) && !item.end.isAfter(latestEnd);
+  }).toList();
+  if (latestNight.isEmpty) {
+    return null;
+  }
+
+  var start = latestNight.first.start;
+  var end = latestNight.first.end;
+  for (final item in latestNight) {
+    if (item.start.isBefore(start)) {
+      start = item.start;
+    }
+    if (item.end.isAfter(end)) {
+      end = item.end;
+    }
+  }
+
+  final minutes = end.difference(start).inMinutes;
+  if (minutes < 120 || minutes > 16 * 60) {
+    return null;
+  }
+  return SleepWindow(start: start, end: end, source: 'stage');
 }
 
 bool isInsideWindow(DateTime? start, DateTime? end, DateTime? windowStart, DateTime? windowEnd) {
