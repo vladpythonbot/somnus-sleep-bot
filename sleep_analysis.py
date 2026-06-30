@@ -240,6 +240,8 @@ def build_debug_summary(raw_debug: dict[str, Any] | None) -> str:
         ("окно чтения", "read_window_days", "дн."),
         ("SleepSession записей", "session_record_count", ""),
         ("SleepStage записей", "stage_record_count", ""),
+        ("последний конец SleepSession", "latest_session_end", ""),
+        ("последний конец SleepStage", "latest_stage_end", ""),
         ("выбран источник", "selected_sleep_source", ""),
         ("выбран старт", "selected_sleep_start", ""),
         ("выбран конец", "selected_sleep_end", ""),
@@ -385,6 +387,16 @@ def build_statistics_report(history: list[SleepApkPayload] | None) -> str:
     return "📊 <b>Статистика сна</b>" + build_history_summary(history)
 
 
+def should_show_debug_for_payload(payload: SleepApkPayload) -> bool:
+    if not payload.raw_debug:
+        return False
+    payload_key = date_key(payload.date)
+    sleep_key = date_key(payload.sleep_end) or date_key(payload.sleep_start)
+    if not payload_key or not sleep_key:
+        return False
+    return sleep_key < payload_key
+
+
 def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] | None = None) -> str:
     total = resolved_total_sleep(payload)
     if total <= 0:
@@ -433,6 +445,8 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
         f"• регулярность: {index_parts['regularity']}/100"
     )
 
+    debug_text = build_debug_summary(payload.raw_debug) if should_show_debug_for_payload(payload) else ""
+
     return (
         "🌙 <b>Отчёт о сне</b>\n\n"
         f"📅 Дата: <b>{sleep_report_date(payload)}</b>\n"
@@ -447,4 +461,5 @@ def build_sleep_report(payload: SleepApkPayload, history: list[SleepApkPayload] 
         f"📊 <b>Из чего сложился индекс</b>\n{index_text}\n\n"
         f"🔎 <b>Замечания</b>\n{notes_text}\n\n"
         f"💡 <b>Рекомендации</b>\n{recommendations_text}"
+        f"{debug_text}"
     )

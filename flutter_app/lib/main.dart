@@ -8,7 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:workmanager/workmanager.dart';
 
-const String appBuild = '2026-06-30-stage-window-fallback';
+const String appBuild = '2026-06-30-stale-sleep-diagnostics';
 const String backendUrl = 'https://somnus-sleep-bot-production.up.railway.app/webhook/sleep-apk';
 const String sleepTaskName = 'sleep_daily_sync';
 const String sleepTaskUniqueName = 'sleep_daily_sync_unique';
@@ -216,6 +216,8 @@ Future<Map<String, dynamic>> collectSleepPayload(String telegramId) async {
       'read_window_days': 7,
       'session_record_count': countRecordLikeItems(sessionRecords),
       'stage_record_count': countRecordLikeItems(stageRecords),
+      'latest_session_end': latestRecordEnd(sessionRecords)?.toIso8601String(),
+      'latest_stage_end': latestRecordEnd(stageRecords)?.toIso8601String(),
       'selected_sleep_start': sleepWindow?.start.toIso8601String(),
       'selected_sleep_end': sleepWindow?.end.toIso8601String(),
       'selected_sleep_source': sleepWindow?.source,
@@ -649,6 +651,34 @@ int countRecordLikeItems(dynamic value) {
 
   visit(value);
   return count;
+}
+
+DateTime? latestRecordEnd(dynamic value) {
+  DateTime? latest;
+
+  void visit(dynamic item) {
+    if (item is List) {
+      for (final child in item) {
+        visit(child);
+      }
+      return;
+    }
+    if (item is Map) {
+      final map = item.map((key, child) => MapEntry(key.toString(), child));
+      final end = extractEndTime(map);
+      if (end != null && (latest == null || end.isAfter(latest!))) {
+        latest = end;
+      }
+      for (final child in map.values) {
+        if (child is List || child is Map) {
+          visit(child);
+        }
+      }
+    }
+  }
+
+  visit(value);
+  return latest;
 }
 
 Map<String, dynamic> compactDebugSample(dynamic value) {
